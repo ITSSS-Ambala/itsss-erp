@@ -1,6 +1,6 @@
 export type ERPRecord = { id: string; [key: string]: any };
 export type Store = Record<string, ERPRecord[]>;
-export type Field = { key: string; label: string; type: string; required?: boolean; options?: string[]; relation?: string; section?: string; formula?: string };
+export type Field = { key: string; label: string; type: string; required?: boolean; options?: string[]; relation?: string; section?: string; formula?: string; allowCustom?: boolean; dictionary?: string };
 export type Module = { id: string; name: string; singular: string; group: string; icon: string; description: string; fields: Field[]; columns: string[]; statuses?: string[] };
 
 const f = (key: string, label: string, type = 'text', extra: Partial<Field> = {}): Field => ({ key, label, type, ...extra });
@@ -91,6 +91,7 @@ export const modules: Module[] = [
   definition('customFields', 'Custom Fields', 'Custom Field', 'Settings', 'TextCursorInput', 'Add fields to standard and custom modules without writing code.', [required('name', 'Field label'), required('moduleId', 'Module ID'), required('key', 'Field key'), select('type', 'Field type', ['text', 'number', 'currency', 'date', 'time', 'select', 'checkbox', 'radio', 'email', 'tel', 'url', 'file', 'image', 'relation', 'formula', 'multiselect', 'textarea']), f('required', 'Required', 'checkbox'), f('options', 'Options (one per line)', 'textarea'), f('relation', 'Related module ID'), f('formula', 'Formula (e.g. quantity * rate)'), f('section', 'Section'), status(['Active', 'Inactive'])], ['name', 'moduleId', 'key', 'type', 'required', 'status'], ['Active', 'Inactive']),
   definition('customModules', 'Custom Modules', 'Custom Module', 'Settings', 'Blocks', 'Create specialized operational modules with custom fields and forms.', [required('name', 'Module name'), required('moduleId', 'Module ID (lowercase letters)'), required('singular', 'Singular record name'), f('group', 'Navigation group'), f('description', 'Description', 'textarea'), f('statuses', 'Statuses (one per line)', 'textarea'), f('permissions', 'Permissions', 'textarea'), status(['Active', 'Inactive'])], ['name', 'moduleId', 'group', 'status'], ['Active', 'Inactive']),
   definition('customStatuses', 'Custom Statuses', 'Custom Status', 'Settings', 'Tags', 'Extend lead, project, task, ticket and contract workflows.', [required('name', 'Status name'), required('moduleId', 'Module ID'), f('color', 'Color (hex)'), f('order', 'Display order', 'number'), f('terminal', 'Final status', 'checkbox'), status(['Active', 'Inactive'])], ['name', 'moduleId', 'color', 'order', 'status'], ['Active', 'Inactive']),
+  definition('dropdownOptions', 'Dropdown Options', 'Dropdown Option', 'Settings', 'List', 'Reusable business choices added from forms.', [required('name', 'Option label'), required('moduleId', 'Module ID'), required('fieldKey', 'Field key'), status(['Active', 'Inactive'])], ['name', 'moduleId', 'fieldKey', 'status'], ['Active', 'Inactive']),
   definition('customForms', 'Custom Forms', 'Custom Form', 'Settings', 'ClipboardPen', 'Build survey, requirement, feedback and installation checklist forms.', [required('name', 'Form name'), required('moduleId', 'Target module ID'), f('description', 'Description', 'textarea'), f('fieldKeys', 'Included field keys (comma-separated)', 'textarea'), f('instructions', 'Form instructions', 'textarea'), status(['Draft', 'Published', 'Archived'])], ['name', 'moduleId', 'status'], ['Draft', 'Published', 'Archived']),
   definition('categories', 'Categories & Lists', 'List Item', 'Settings', 'List', 'Manage cities, departments, brands, lead sources and business categories.', [required('name', 'Name'), select('type', 'List type', ['City', 'Department', 'Brand', 'Lead Source', 'Product Category', 'Service Category', 'Customer Category', 'Expense Category', 'Payment Method', 'Location']), f('description', 'Description', 'textarea'), status(['Active', 'Inactive'])], ['name', 'type', 'status'], ['Active', 'Inactive']),
   definition('taxes', 'Taxes', 'Tax Rate', 'Settings', 'Calculator', 'Configure GST rates used in products, services and procurement.', [required('name', 'Tax name'), f('rate', 'Tax rate %', 'number', { required: true }), f('hsn', 'HSN / SAC code'), status(['Active', 'Inactive'])], ['name', 'rate', 'hsn', 'status'], ['Active', 'Inactive']),
@@ -105,20 +106,49 @@ export const modules: Module[] = [
 
 export const moduleById: Record<string, Module> = Object.fromEntries(modules.map(module => [module.id, module]));
 
+export type DropdownConfig = { kind: 'relation' | 'dictionary' | 'status' | 'option'; targetModule?: string; dictionary?: string };
+const dictionaries: Record<string, string> = { 'leads.source': 'Lead Source', 'customers.category': 'Customer Category', 'products.category': 'Product Category', 'services.category': 'Service Category', 'employees.department': 'Department', 'projects.department': 'Department', 'expenses.category': 'Expense Category', 'employeeExpenses.category': 'Expense Category', 'payments.method': 'Payment Method', 'supplierPayments.method': 'Payment Method', 'expenses.method': 'Payment Method', 'income.method': 'Payment Method', 'products.brand': 'Brand', 'assets.brand': 'Brand', 'inventory.location': 'Location', 'purchases.location': 'Location', 'purchaseOrders.location': 'Location', 'allocations.location': 'Location', 'serials.location': 'Location', 'stockTransfers.fromLocation': 'Location', 'stockTransfers.toLocation': 'Location' };
+const fixedBusinessFields = new Set(['employees.role', 'recurring.cycle', 'commissions.type', 'payments.type', 'serials.type', 'notes.type', 'documents.relatedModule', 'communication.channel', 'communication.status']);
+const fixedWorkflowModules = new Set(['payments', 'supplierPayments', 'income', 'expenses', 'receivables', 'payables', 'payroll', 'employeeExpenses', 'commissions', 'purchases', 'stockTransfers', 'allocations', 'attendance']);
+
+/** Safe list classifications may grow; executable and financial-effect enums stay fixed. */
+export function getDropdownConfig(moduleId: string, field: Field): DropdownConfig | undefined {
+  if (field.type === 'formula' || ['auditLogs', 'activities', 'stockHistory'].includes(moduleId)) return;
+  if (field.relation) return { kind: 'relation', targetModule: field.relation };
+  if (moduleById[moduleId]?.group === 'Settings' || moduleId === 'notifications' || field.key === 'approvalStatus' || fixedBusinessFields.has(`${moduleId}.${field.key}`)) return;
+  const dictionary = field.key === 'city' ? 'City' : dictionaries[`${moduleId}.${field.key}`];
+  if (dictionary) return { kind: 'dictionary', dictionary };
+  if (!['select', 'radio', 'multiselect'].includes(field.type)) return;
+  if (field.key === 'status') return fixedWorkflowModules.has(moduleId) ? undefined : { kind: 'status' };
+  return { kind: 'option' };
+}
+
+const activeConfig = (rows: ERPRecord[] = []) => rows.filter(row => !row.deletedAt && !row.archivedAt && row.status !== 'Inactive');
+function uniqueOptions(options: unknown[]): string[] {
+  const seen = new Set<string>();
+  return options.map(String).map(value => value.trim()).filter(value => { const key = value.normalize('NFKC').toLocaleLowerCase('en-IN'); if (!value || seen.has(key)) return false; seen.add(key); return true; });
+}
+function dictionaryDefaults(dictionary?: string): string[] {
+  if (dictionary === 'City') return ['Ambala', 'Chandigarh', 'Panchkula', 'Mohali', 'Other Cities'];
+  if (dictionary === 'Location') return ['Main Office', 'Shop', 'Warehouse', 'Technician', 'Customer Site'];
+  const source: Record<string, [string, string]> = { 'Department': ['employees', 'department'], 'Lead Source': ['leads', 'source'], 'Customer Category': ['customers', 'category'], 'Product Category': ['products', 'category'], 'Service Category': ['services', 'category'], 'Expense Category': ['expenses', 'category'], 'Payment Method': ['payments', 'method'] };
+  const [moduleId, key] = source[dictionary || ''] || [];
+  return moduleById[moduleId]?.fields.find(field => field.key === key)?.options || [];
+}
+
 export function resolveModules(store: Store): Module[] {
-  const custom = (store.customModules || []).filter(r => !r.deletedAt && r.status !== 'Inactive').map(r => definition(r.moduleId, r.name, r.singular || r.name, r.group || 'Custom', 'Blocks', r.description || 'Custom business module.', [required('name', `${r.singular || 'Record'} name`), ...(r.statuses ? [status(String(r.statuses).split('\n').filter(Boolean))] : []), note], ['name', ...(r.statuses ? ['status'] : [])], String(r.statuses || '').split('\n').filter(Boolean)));
+  const custom = activeConfig(store.customModules).map(r => definition(r.moduleId, r.name, r.singular || r.name, r.group || 'Custom', 'Blocks', r.description || 'Custom business module.', [required('name', `${r.singular || 'Record'} name`), ...(r.statuses ? [status(String(r.statuses).split('\n').filter(Boolean))] : []), note], ['name', ...(r.statuses ? ['status'] : [])], String(r.statuses || '').split('\n').filter(Boolean)));
   return [...modules, ...custom].map(module => {
-    const additions = (store.customFields || []).filter(r => !r.deletedAt && r.status !== 'Inactive' && r.moduleId === module.id).map(r => f(r.key, r.name, r.type, { required: !!r.required, options: String(r.options || '').split('\n').filter(Boolean), relation: r.relation || undefined, section: r.section || undefined, formula: r.formula || undefined }));
-    const newStatuses = (store.customStatuses || []).filter(r => !r.deletedAt && r.status !== 'Inactive' && r.moduleId === module.id).sort((a, b) => Number(a.order || 0) - Number(b.order || 0)).map(r => r.name);
-    const dictionaries: Record<string, string> = { 'leads.source': 'Lead Source', 'customers.category': 'Customer Category', 'products.category': 'Product Category', 'services.category': 'Service Category', 'employees.department': 'Department', 'expenses.category': 'Expense Category', 'employeeExpenses.category': 'Expense Category', 'payments.method': 'Payment Method', 'supplierPayments.method': 'Payment Method', 'expenses.method': 'Payment Method', 'income.method': 'Payment Method' };
+    const additions = activeConfig(store.customFields).filter(r => r.moduleId === module.id).map(r => f(r.key, r.name, r.type, { required: !!r.required, options: String(r.options || '').split('\n').filter(Boolean), relation: r.relation || undefined, section: r.section || undefined, formula: r.formula || undefined }));
+    const newStatuses = activeConfig(store.customStatuses).filter(r => r.moduleId === module.id).sort((a, b) => Number(a.order || 0) - Number(b.order || 0)).map(r => r.name);
     const fields = module.fields.filter(field => !additions.some(add => add.key === field.key)).concat(additions).map(field => {
-      if (!field.options) return field;
-      const dictionary = dictionaries[`${module.id}.${field.key}`];
-      const customOptions = dictionary ? (store.categories || []).filter(r => !r.deletedAt && !r.archivedAt && r.status !== 'Inactive' && r.type === dictionary).map(r => r.name).filter(Boolean) : [];
-      const customRoles = module.id === 'employees' && field.key === 'role' ? (store.roles || []).filter(r => !r.deletedAt && !r.archivedAt && r.status !== 'Inactive').map(r => r.name).filter(Boolean) : [];
-      const customStatusOptions = field.key === 'status' ? newStatuses : [];
-      return { ...field, options: [...new Set([...field.options, ...customOptions, ...customRoles, ...customStatusOptions])] };
+      const config = getDropdownConfig(module.id, field);
+      const customOptions = config?.dictionary ? activeConfig(store.categories).filter(r => r.type === config.dictionary).map(r => r.name) : [];
+      const stored = activeConfig(store.dropdownOptions).filter(r => r.moduleId === module.id && r.fieldKey === field.key).map(r => r.name);
+      const customRoles = module.id === 'employees' && field.key === 'role' ? activeConfig(store.roles).map(r => r.name) : [];
+      const options = uniqueOptions([...(field.options || []), ...dictionaryDefaults(config?.dictionary), ...customOptions, ...customRoles, ...(config?.kind === 'status' ? newStatuses : []), ...(config || field.key === 'role' && module.id === 'employees' ? stored : [])]);
+      return { ...field, allowCustom: Boolean(config), dictionary: config?.dictionary, options: field.options || options.length ? options : undefined };
     });
-    return { ...module, fields, statuses: module.statuses ? [...new Set([...module.statuses, ...newStatuses])] : undefined };
+    return { ...module, fields, statuses: fields.find(field => field.key === 'status')?.options || module.statuses };
   });
 }

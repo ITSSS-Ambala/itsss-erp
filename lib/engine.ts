@@ -1,4 +1,4 @@
-import { moduleById, resolveModules, type ERPRecord, type Module, type Store } from './schema.ts';
+import { getDropdownConfig, moduleById, resolveModules, type ERPRecord, type Module, type Store } from './schema.ts';
 
 export type Actor = string | { id?: string; name?: string; email?: string; role?: string; [key: string]: unknown };
 export type Action = 'create' | 'update' | 'delete' | 'restore' | 'duplicate' | 'archive' | 'permanentDelete';
@@ -63,7 +63,12 @@ export function validateRecord(moduleId: string, data: Partial<ERPRecord>, store
     }
     if (field.type === 'datetime-local' && Number.isNaN(new Date(String(value)).getTime())) errors.push(`${field.label} must be a valid date and time.`);
     if (field.type === 'time' && !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(String(value))) errors.push(`${field.label} must be a valid time.`);
-    if (['select', 'radio'].includes(field.type) && field.options?.length && !field.options.includes(String(value))) errors.push(`${field.label} must be one of the configured options.`);
+    if (['select', 'radio'].includes(field.type) && (typeof value !== 'string' || !field.relation && !field.options?.includes(value))) errors.push(`${field.label} must be one of the configured options.`);
+    if (field.type === 'multiselect') {
+      if (!Array.isArray(value) || value.some(item => typeof item !== 'string') || new Set(value).size !== value.length) errors.push(`${field.label} must be a list of unique selections.`);
+      else if (!field.relation && value.some(item => !field.options?.includes(item))) errors.push(`${field.label} must contain configured options only.`);
+    }
+    if (field.type === 'relation' && typeof value !== 'string') errors.push(`${field.label} must identify a related record.`);
     if (field.relation) {
       const values = Array.isArray(value) ? value : [value];
       for (const relationId of values) if (!get(store, field.relation, String(relationId))) errors.push(`${field.label} refers to a missing or deleted record.`);
@@ -71,6 +76,19 @@ export function validateRecord(moduleId: string, data: Partial<ERPRecord>, store
   }
   const uniqueKeys: Record<string, string[]> = { products: ['sku'], assets: ['serialNumber'], serials: ['name'], users: ['email'], customModules: ['moduleId'], roles: ['name'] };
   for (const key of uniqueKeys[moduleId] || []) if (data[key] && live(store[moduleId]).some(r => r.id !== data.id && String(r[key]).toLowerCase() === String(data[key]).toLowerCase())) errors.push(`${key} already exists.`);
+  if (['categories', 'customStatuses', 'dropdownOptions'].includes(moduleId)) {
+    const normalized = (value: unknown) => String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-IN');
+    const label = String(data.name || '').trim();
+    if (!label || label.length > 80 || /[\u0000-\u001f\u007f]/.test(label) || /^__(?:create|new|add)/i.test(label)) errors.push('Option labels must contain 1–80 visible characters.');
+    const sameScope = (row: ERPRecord) => moduleId === 'categories' ? row.type === data.type : row.moduleId === data.moduleId && (moduleId !== 'dropdownOptions' || row.fieldKey === data.fieldKey);
+    if (live(store[moduleId]).some(row => !row.archivedAt && row.status !== 'Inactive' && row.id !== data.id && sameScope(row) && normalized(row.name) === normalized(data.name))) errors.push('This option already exists.');
+    if (moduleId !== 'categories') {
+      const target = resolveModules(store).find(item => item.id === data.moduleId);
+      const field = target?.fields.find(item => item.key === (moduleId === 'customStatuses' ? 'status' : data.fieldKey));
+      const config = field && target ? getDropdownConfig(target.id, field) : undefined;
+      if (!config || config.kind !== (moduleId === 'customStatuses' ? 'status' : 'option')) errors.push('This field does not allow configurable options.');
+    }
+  }
   if (data.progress !== undefined && (n(data.progress) < 0 || n(data.progress) > 100)) errors.push('Progress must be between 0 and 100.');
   if (data.gstRate !== undefined && (n(data.gstRate) < 0 || n(data.gstRate) > 100)) errors.push('GST rate must be between 0 and 100.');
   if (data.percentage !== undefined && n(data.percentage) > 100) errors.push('Commission percentage cannot exceed 100.');

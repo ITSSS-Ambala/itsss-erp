@@ -2,7 +2,7 @@
 
 A responsive internal ERP inspired by the supplied ITSSS dashboard design, with INR calculations, a navy sidebar, live dashboard charts, light/dark themes and mobile navigation.
 
-The implementation includes **70 module schemas and 250 demo records** covering CRM, customer sites, projects, technicians, stock, purchases, finance, support, renewals, staff, marketing, documents and administration. Quotations and invoices are intentionally excluded, as requested in the feature-list attachment.
+The implementation includes **71 module schemas and 250 demo records** covering CRM, customer sites, projects, technicians, stock, purchases, finance, support, renewals, staff, marketing, documents and administration. Quotations and invoices are intentionally excluded, as requested in the feature-list attachment.
 
 See [the 85-section feature audit](docs/FEATURE_AUDIT.md) for precise coverage, executed checks and unfinished integrations. This project does not claim that every production requirement is complete.
 
@@ -22,6 +22,12 @@ Source is maintained in the private [jabbersinghdhami/itsss-erp](https://github.
 - AES-256-GCM vault encryption at rest and in manual JSON backups. Validated restore preserves current users/roles/audit history.
 
 Dashboard customization and theme preference are stored in the current browser. Business records persist in Cloudflare D1; uploaded file bytes persist in R2.
+
+## Inline dropdown creation
+
+Business dropdowns are searchable. Authorized users can create related records in nested forms, select the new record automatically, and keep unfinished parent drafts. Multiselect fields append new records without removing prior selections. Roles use the complete role definition form; new record-form templates start with the current module and Published status.
+
+Shared cities, brands, departments, stock locations, categories, lead sources and payment methods persist across matching fields. Other eligible business choices, including custom radio and multiselect fields, persist per field. Creation follows server permissions and hidden-field rules; normalized duplicates reuse the existing value. Filters, chart ranges, themes, implementation/security controls and enums that determine financial posting remain fixed.
 
 ## Run locally
 
@@ -59,13 +65,17 @@ The server rejects stale revisions instead of overwriting another user's update.
 
 ```sh
 npx tsc --noEmit
-node --experimental-strip-types --test tests/engine.test.ts tests/permissions.test.ts tests/vault.test.ts
+node --experimental-strip-types --test tests/engine.test.ts tests/permissions.test.ts tests/vault.test.ts tests/dropdowns.test.ts
 npm run build
 ```
 
-The automated suite currently passes **58 tests**: 36 business-engine, 13 access/restore and 9 vault tests. It covers calculations, stock invariants, idempotency, role scopes, hidden fields, file access, approval transitions/reversal, safe formulas, deletion/restore and encryption/tamper rejection.
+The automated suite currently passes **78 tests**: 36 business-engine, 13 access/restore, 9 vault and 20 dropdown tests. It covers calculations, stock invariants, idempotency, role scopes, hidden fields, file access, approval transitions/reversal, safe formulas, deletion/restore, encryption/tamper rejection and permission-checked dropdown persistence, validation, duplicate reuse and stale revisions.
 
-Final TypeScript and production build checks passed after the Excel default-import interoperability adjustment. Local browser checks covered desktop 1440x1000, mobile 390x844 and tablet 768x1024 without horizontal page overflow on mobile/tablet. A mobile Won lead persisted after refresh with its linked customer/project and passed delete/recycle/restore. Dark/Light switching, calendar Next/Today, real PDF/XLSX downloads, QR rendering and manual asset lookup also passed.
+Final TypeScript, production build and all 78 automated tests passed after the keyboard/focus changes. Earlier local browser checks covered desktop 1440x1000, mobile 390x844 and tablet 768x1024 without horizontal page overflow on mobile/tablet. A mobile Won lead persisted after refresh with its linked customer/project and passed delete/recycle/restore. Dark/Light switching, calendar Next/Today, real PDF/XLSX downloads, QR rendering and manual asset lookup also passed.
+
+Desktop checks for this revision verified draft retention on cancel, automatic customer selection, nested Site/category creation, inherited customer links, technician multiselect append, saved relationships after a fresh API read, normalized duplicate reuse without a revision change, stale-revision rejection, fixed payment-status rejection and deep-link edit retention. Escape closes the open choice list, Ctrl/Cmd+K respects active dialogs, and failed option creation returns focus to the input while cancel preserves the old value. Template creation prefilled the current module and Published status, then saved and selected the template while retaining the parent draft; the form showed mapped fields plus required fields.
+
+At mobile 390x844, the page and dropdown stayed within the viewport. Nested Customer/category creation selected both new values while retaining the Project draft, and parent Cancel worked. Thirteen synthetic records created for this revision were moved to Recycle Bin with immutable history retained; real user data was untouched. These checks cover the stated workflows, not every module/device combination.
 
 The app's Excel reader and authenticated local import API processed an XLSX row. R2 upload/linked-download returned exactly matching file bytes, and backup export contained encrypted vault envelopes. The browser import picker was blocked by the browser extension's disabled file-URL access; its mapping/preview flow remains unverified. Detailed evidence is tracked in [FEATURE_AUDIT.md](docs/FEATURE_AUDIT.md).
 
@@ -86,11 +96,11 @@ Advanced approval thresholds, automatic document version chains, all specialized
 - [Schema and dynamic configuration](lib/schema.ts), [seed data](lib/seed.ts), [business engine](lib/engine.ts).
 - [Access policies and restore validation](lib/access.ts), [D1 workspace persistence](lib/server.ts), [encrypted vault](lib/vault.ts).
 - [Workspace API](app/api/workspace/route.ts), [file API](app/api/files/route.ts), [backup API](app/api/backup/route.ts).
-- [Application and forms](app/erp-app.tsx), [dashboard](app/dashboard.tsx), [reports](app/reports.tsx), [asset tools](app/asset-tools.tsx), [spreadsheet/PDF/QR utilities](lib/file-utils.ts).
-- [Feature acceptance audit](docs/FEATURE_AUDIT.md), [engine tests](tests/engine.test.ts), [permission tests](tests/permissions.test.ts), [vault tests](tests/vault.test.ts).
+- [Application and forms](app/erp-app.tsx), [searchable dropdowns](app/creatable-select.tsx), [inline choice dialog](app/inline-item-dialog.tsx), [dropdown persistence](lib/dropdowns.ts), [dashboard](app/dashboard.tsx), [reports](app/reports.tsx), [asset tools](app/asset-tools.tsx), [spreadsheet/PDF/QR utilities](lib/file-utils.ts).
+- [Feature acceptance audit](docs/FEATURE_AUDIT.md), [engine tests](tests/engine.test.ts), [permission tests](tests/permissions.test.ts), [vault tests](tests/vault.test.ts), [dropdown tests](tests/dropdowns.test.ts).
 
 The application runs on React/Vinext with a Cloudflare Worker, D1 and R2. The included Sites execution-profile and build scripts support portable development and managed deployment. Publish through the configured hosting workflow; a local build or preview does not deploy the site.
 
 ## Final verification
 
-Final production build and TypeScript check passed after the last implementation changes. The final automated suite passed all 58 tests. Local browser and API checks are described above. The private GitHub repository contains the application source; the hosted app has not been deployed.
+Final production build, TypeScript and all 78 automated tests passed after the keyboard/focus changes. Verified local browser/API workflows and remaining gaps are described above. The private GitHub repository contains the application source; the hosted app has not been deployed.

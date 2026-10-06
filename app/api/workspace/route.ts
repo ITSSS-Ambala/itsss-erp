@@ -3,6 +3,7 @@ import { loadWorkspace, saveWorkspace, apiError, checkOrigin, workspaceResponse,
 import { applyMutation, runAutomations, type Action } from '../../../lib/engine';
 import { assertMutationAccess, resolveRole, canDownloadFile } from '../../../lib/access';
 import { resolveModules, type ERPRecord, type Store } from '../../../lib/schema';
+import { createDropdownOption } from '../../../lib/dropdowns';
 
 export async function GET() {
   try {
@@ -16,14 +17,21 @@ export async function POST(request:Request) {
   try {
     checkOrigin(request);
     const {store,revision,user}=await loadWorkspace();
-    const body=await request.json() as {revision?:number;module?:string;action?:string;id?:string;data?:unknown};
+    const body=await request.json() as {revision?:number;module?:string;action?:string;id?:string;field?:string;data?:unknown};
     if(body.revision!==revision)throw new Error('CONFLICT: Another update arrived. Refresh and try again.');
     const moduleId=String(body.module||''),action=String(body.action||'');
-    if(!['create','update','delete','restore','duplicate','archive','permanentDelete','import'].includes(action))throw new Error('Unsupported action.');
+    if(!['create','update','delete','restore','duplicate','archive','permanentDelete','import','createOption'].includes(action))throw new Error('Unsupported action.');
     const module=resolveModules(store).find(item=>item.id===moduleId);
     if(!module)throw new Error('Unknown module.');
     const actor=requestActor(request,user);
+    if(action==='createOption') {
+      const data=body.data&&typeof body.data==='object'&&!Array.isArray(body.data)?body.data as {name?:unknown}:{};
+      const created=createDropdownOption(store,user,{moduleId,fieldKey:String(body.field||''),name:data.name,expectedRevision:body.revision,revision},actor);
+      const nextRevision=created.reused?revision:await saveWorkspace(created.store,revision);
+      return workspaceResponse(created.store,nextRevision,user,{option:{value:created.value,reused:created.reused,module:moduleId,field:String(body.field||'')}});
+    }
     let next:Store=store;
+    let createdRecordId:string|undefined;
     const prepare=(raw:unknown)=>{
       if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('Record data must be an object.');
       const data={...raw} as Partial<ERPRecord>;
@@ -58,7 +66,7 @@ export async function POST(request:Request) {
         if(!['Super Admin','Admin'].includes(resolveRole(target.role,next))||target.status!=='Active'||target.email?.toLowerCase()!==user.email?.toLowerCase()||['delete','archive','permanentDelete'].includes(operation))throw new Error('Keep your current administrator membership active.');
       }
       const result=applyMutation(next,moduleId,operation,data,id,actor);
-      if(operation==='create'||operation==='duplicate')result.record.createdById=user.userId;
+      if(operation==='create'||operation==='duplicate'){result.record.createdById=user.userId;createdRecordId=result.record.id;}
       next=result.store;
     };
     if(action==='import') {
@@ -70,6 +78,6 @@ export async function POST(request:Request) {
     }
     next=runAutomations(next).store;
     const nextRevision=await saveWorkspace(next,revision);
-    return workspaceResponse(next,nextRevision,user);
+    return workspaceResponse(next,nextRevision,user,{createdRecordId});
   } catch(error) { return apiError(error); }
 }

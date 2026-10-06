@@ -1,11 +1,11 @@
-import { resolveModules, type ERPRecord, type Store } from './schema.ts';
+import { getDropdownConfig, moduleById, resolveModules, type ERPRecord, type Field, type Store } from './schema.ts';
 import { validateRecord, recalculate } from './engine.ts';
 
 export type AccessUser = { userId: string; displayName: string; email?: string; memberId?: string; role: string; employee?: string; customer?: string };
 const live = (rows: ERPRecord[] = []) => rows.filter(row => !row.deletedAt && !row.archivedAt && row.status !== 'Inactive');
 const configured = (value: unknown): string[] => Array.isArray(value) ? value.map(String) : String(value || '').split(/[\n,]/).map(item => item.trim()).filter(Boolean);
 export const historyModules = new Set(['auditLogs', 'activities', 'stockHistory']);
-const adminModules = new Set(['users', 'roles', 'customFields', 'customModules', 'customStatuses', 'customForms', 'categories', 'taxes', 'templates', 'automations', 'vault', 'backups']);
+const adminModules = new Set(['users', 'roles', 'customFields', 'customModules', 'customStatuses', 'customForms', 'dropdownOptions', 'categories', 'taxes', 'templates', 'automations', 'vault', 'backups']);
 const restrictedRoles = new Set(['Technician', 'Developer', 'Marketing', 'Sales', 'Client']);
 const financialFields = new Set(['purchasePrice', 'unitCost', 'salary', 'cost', 'actualCost', 'estimatedCost', 'profit', 'margin', 'materialCost', 'expectedProfit', 'costVariance', 'creditLimit', 'licenseKey', 'credential', 'commission', 'totalCost', 'lifetimeProfit', 'netSalary']);
 const writable: Record<string, string[]> = {
@@ -38,7 +38,7 @@ export function permit(roleValue: string, moduleId: string, actionValue: string,
   const aliases: Record<string, string> = { create: 'add', update: 'edit', duplicate: 'add', import: 'add', restore: 'delete', archive: 'edit', permanentDelete: 'delete' };
   const action = aliases[actionValue] || actionValue.toLowerCase();
   if (!['view', 'add', 'edit', 'delete', 'export', 'approve', 'assign', 'download', 'share'].includes(action)) return false;
-  if (!resolveModules(store).some(module => module.id === moduleId)) return false;
+  if (!moduleById[moduleId] && !live(store.customModules).some(module => module.moduleId === moduleId)) return false;
   if (historyModules.has(moduleId) && !['view', 'export', 'download'].includes(action)) return false;
   if (['Super Admin', 'Admin'].includes(role)) return true;
   if (role === 'Unassigned') return false;
@@ -128,6 +128,21 @@ export function hiddenFields(store: Store, user: AccessUser, moduleId: string): 
   return fields;
 }
 
+export function canCreateDropdownOption(store: Store, user: AccessUser, moduleId: string, field: Field): boolean {
+  if (!permit(user.role, moduleId, 'view', store) || !(permit(user.role, moduleId, 'add', store) || permit(user.role, moduleId, 'edit', store)) || hiddenFields(store, user, moduleId).has(field.key)) return false;
+  if (user.role === 'Technician' && (!user.employee || !live(store.employees).some(row => row.id === user.employee))) return false;
+  // Employee roles are real authorization definitions, not arbitrary new strings.
+  if (moduleId === 'employees' && field.key === 'role') return permit(user.role, 'roles', 'view', store) && permit(user.role, 'roles', 'add', store);
+  const config = getDropdownConfig(moduleId, field);
+  if (!config) return false;
+  if (config.kind === 'relation') return Boolean(config.targetModule && permit(user.role, config.targetModule, 'view', store) && permit(user.role, config.targetModule, 'add', store));
+  return true;
+}
+
+export function dropdownPermissionsFor(store: Store, user: AccessUser): Record<string, Record<string, boolean>> {
+  return Object.fromEntries(resolveModules(store).map(module => [module.id, Object.fromEntries(module.fields.map(field => [field.key, canCreateDropdownOption(store, user, module.id, field)]))]));
+}
+
 export function visibleStore(store: Store, user: AccessUser): Store {
   const result: Store = {};
   for (const [moduleId, rows] of Object.entries(store)) {
@@ -140,6 +155,13 @@ export function visibleStore(store: Store, user: AccessUser): Store {
       if (moduleId === 'settings' && !['Super Admin', 'Admin'].includes(user.role)) return Object.fromEntries(Object.entries(safe).filter(([key]) => ['id', 'name', 'fullName', 'logo', 'brandColor', 'currency', 'demo'].includes(key))) as ERPRecord;
       return safe;
     });
+  }
+  if (!['Super Admin', 'Admin'].includes(user.role)) {
+    // These are read-only, scoped schema choices, not access to settings records.
+    const definitions = resolveModules(store).filter(module => permit(user.role, module.id, 'view', store));
+    result.dropdownOptions = definitions.flatMap(module => module.fields.filter(field => !hiddenFields(store, user, module.id).has(field.key)).flatMap(field => (field.options || []).map((name, index) => ({ id: `SCHEMA-${module.id}-${field.key}-${index}`, moduleId: module.id, fieldKey: field.key, name, status: 'Active', schemaOnly: true }))));
+    result.customModules = live(store.customModules).filter(row => permit(user.role, row.moduleId, 'view', store)).map(row => ({ id: row.id, name: row.name, moduleId: row.moduleId, singular: row.singular, group: row.group, description: row.description, statuses: hiddenFields(store, user, row.moduleId).has('status') ? '' : row.statuses, status: 'Active', schemaOnly: true }));
+    result.customFields = live(store.customFields).filter(row => permit(user.role, row.moduleId, 'view', store) && !hiddenFields(store, user, row.moduleId).has(row.key)).map(row => ({ id: row.id, name: row.name, moduleId: row.moduleId, key: row.key, type: row.type, required: row.required, options: row.options, relation: row.relation, section: row.section, status: 'Active', schemaOnly: true }));
   }
   return result;
 }
