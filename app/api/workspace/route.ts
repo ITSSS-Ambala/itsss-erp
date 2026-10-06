@@ -4,6 +4,8 @@ import { applyMutation, runAutomations, type Action } from '../../../lib/engine'
 import { assertMutationAccess, resolveRole, canDownloadFile } from '../../../lib/access';
 import { resolveModules, type ERPRecord, type Store } from '../../../lib/schema';
 import { createDropdownOption } from '../../../lib/dropdowns';
+import { mutateProjectPost, updateProjectProgress, validateProjectMediaReferences } from '../../../lib/project-posts';
+import { validateLogoMetadata, validateMediaUpload } from '../../../lib/media';
 
 export async function GET() {
   try {
@@ -20,10 +22,18 @@ export async function POST(request:Request) {
     const body=await request.json() as {revision?:number;module?:string;action?:string;id?:string;field?:string;data?:unknown};
     if(body.revision!==revision)throw new Error('CONFLICT: Another update arrived. Refresh and try again.');
     const moduleId=String(body.module||''),action=String(body.action||'');
-    if(!['create','update','delete','restore','duplicate','archive','permanentDelete','import','createOption'].includes(action))throw new Error('Unsupported action.');
+    if(!['create','update','delete','restore','duplicate','archive','permanentDelete','import','createOption','updateProjectProgress'].includes(action))throw new Error('Unsupported action.');
     const module=resolveModules(store).find(item=>item.id===moduleId);
     if(!module)throw new Error('Unknown module.');
     const actor=requestActor(request,user);
+    if(action==='updateProjectProgress') {
+      if(moduleId!=='projects'||!body.id)throw new Error('Choose a project to update.');
+      if(!body.data||typeof body.data!=='object'||Array.isArray(body.data))throw new Error('Provide project progress or a stage.');
+      const result=updateProjectProgress(store,user,body.id,body.data as Partial<ERPRecord>,actor);
+      const next=runAutomations(result.store).store;
+      const nextRevision=await saveWorkspace(next,revision);
+      return workspaceResponse(next,nextRevision,user);
+    }
     if(action==='createOption') {
       const data=body.data&&typeof body.data==='object'&&!Array.isArray(body.data)?body.data as {name?:unknown}:{};
       const created=createDropdownOption(store,user,{moduleId,fieldKey:String(body.field||''),name:data.name,expectedRevision:body.revision,revision},actor);
@@ -50,22 +60,32 @@ export async function POST(request:Request) {
     const change=async(data:Partial<ERPRecord>,operation:Action,id?:string)=>{
       const existing=id?(next[moduleId]||[]).find(row=>row.id===id):undefined;
       assertMutationAccess(next,user,moduleId,operation,data,existing);
+      if(moduleId==='projectPosts'&&data.media!==undefined) data.media=await validateProjectMediaReferences(next,user,String(data.project||existing?.project),data.media,async key=>(await env.BUCKET?.head(key))||null);
       for(const field of module.fields.filter(item=>['file','image'].includes(item.type.toLowerCase()))) {
+        if(moduleId==='projectPosts'&&field.key==='media')continue;
         const files=data[field.key];
         if(files===undefined)continue;
         if(!Array.isArray(files))throw new Error('Uploaded files must be a list.');
         for(const file of files) {
           if(!file||typeof file!=='object'||typeof file.key!=='string'||!/^files\/[a-zA-Z0-9-]+\/[a-zA-Z0-9._-]+$/.test(file.key))throw new Error('Choose a file uploaded to this workspace.');
           const uploaded=await env.BUCKET?.head(file.key);
-          if(!uploaded||!canDownloadFile(store,user,file.key,uploaded.customMetadata))throw new Error('FORBIDDEN: You cannot link a restricted file.');
-          file.url='/api/files?key='+encodeURIComponent(file.key);
+          if(!uploaded||!canDownloadFile(store,user,file.key,{...uploaded.customMetadata,contentType:uploaded.httpMetadata?.contentType||'',size:String(uploaded.size)}))throw new Error('FORBIDDEN: You cannot link a restricted file.');
+          if(moduleId==='settings'&&field.key==='logo') {
+            if(files.length>1)throw new Error('Choose one company logo.');
+            validateLogoMetadata(uploaded);
+            const object=await env.BUCKET?.get(file.key);
+            if(!object)throw new Error('Logo file not found.');
+            await validateMediaUpload(new File([await object.arrayBuffer()],uploaded.customMetadata?.name||'logo',{type:uploaded.httpMetadata?.contentType||''}),'logo');
+          }
+          const index=files.indexOf(file);
+          files[index]={key:file.key,url:'/api/files?key='+encodeURIComponent(file.key),name:uploaded.customMetadata?.name||'File',type:uploaded.httpMetadata?.contentType||'application/octet-stream',size:uploaded.size};
         }
       }
       if(moduleId==='users'&&existing?.id===user.memberId) {
         const target={...existing,...data};
         if(!['Super Admin','Admin'].includes(resolveRole(target.role,next))||target.status!=='Active'||target.email?.toLowerCase()!==user.email?.toLowerCase()||['delete','archive','permanentDelete'].includes(operation))throw new Error('Keep your current administrator membership active.');
       }
-      const result=applyMutation(next,moduleId,operation,data,id,actor);
+      const result=moduleId==='projectPosts'?mutateProjectPost(next,user,operation,data,id,actor):applyMutation(next,moduleId,operation,data,id,actor);
       if(operation==='create'||operation==='duplicate'){result.record.createdById=user.userId;createdRecordId=result.record.id;}
       next=result.store;
     };
@@ -78,6 +98,6 @@ export async function POST(request:Request) {
     }
     next=runAutomations(next).store;
     const nextRevision=await saveWorkspace(next,revision);
-    return workspaceResponse(next,nextRevision,user,{createdRecordId});
+    return workspaceResponse(next,nextRevision,user,{createdRecordId,createdRecordModule:moduleId});
   } catch(error) { return apiError(error); }
 }

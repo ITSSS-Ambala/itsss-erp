@@ -113,6 +113,7 @@ test('approval permission is required for approved status as well as approvalSta
 
 test('file downloads require a visible linked record or creator ownership', () => {
   const store = fixture(), key = 'files/file-id/photo.png';
+  store.technicianJobs[0].installationPhotos = [{ key }];
   assert.equal(canDownloadFile(store, technician, key, { module: 'technicianJobs', recordId: 'job-b', creatorId: 'other-user' }), false);
   assert.equal(canDownloadFile(store, technician, key, { module: 'technicianJobs', recordId: 'job-a', creatorId: 'other-user' }), true);
   assert.equal(canDownloadFile(store, technician, key, { module: 'documents', creatorId: technician.userId }), true);

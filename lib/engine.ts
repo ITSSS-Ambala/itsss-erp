@@ -50,6 +50,8 @@ export function validateRecord(moduleId: string, data: Partial<ERPRecord>, store
     if (field.type === 'formula') continue;
     if (field.required && (value === undefined || value === null || (typeof value === 'string' && value.trim() === '') || (Array.isArray(value) && value.length === 0))) errors.push(`${field.label} is required.`);
     if (value === undefined || value === null || value === '') continue;
+    if (['text', 'textarea', 'email', 'tel', 'url'].includes(field.type) && typeof value !== 'string') errors.push(`${field.label} must be text.`);
+    if (['file', 'image'].includes(field.type) && (!Array.isArray(value) || value.some(item => !item || typeof item !== 'object' || Array.isArray(item) || typeof item.key !== 'string' || !/^files\/[a-zA-Z0-9-]+\/[a-zA-Z0-9._-]+$/.test(item.key) || Object.values(item).some(property => property !== null && typeof property === 'object')))) errors.push(`${field.label} must contain uploaded files with flat metadata.`);
     if (['currency', 'number'].includes(field.type)) {
       if (!Number.isFinite(Number(value))) errors.push(`${field.label} must be a finite number.`);
       else if (Number(value) < 0 && !(moduleId === 'stockHistory' && ['quantity', 'reservedDelta'].includes(field.key))) errors.push(`${field.label} cannot be negative.`);
@@ -71,10 +73,30 @@ export function validateRecord(moduleId: string, data: Partial<ERPRecord>, store
     if (field.type === 'relation' && typeof value !== 'string') errors.push(`${field.label} must identify a related record.`);
     if (field.relation) {
       const values = Array.isArray(value) ? value : [value];
-      for (const relationId of values) if (!get(store, field.relation, String(relationId))) errors.push(`${field.label} refers to a missing or deleted record.`);
+      for (const relationId of values) if (!get(store, field.relation, String(relationId))) {
+        const preservedReply = moduleId === 'projectPosts' && field.key === 'parent' && data.id && (store.projectPosts || []).some(row => row.id === data.id && row.parent === relationId) && (store.projectPosts || []).some(row => row.id === relationId);
+        if (!preservedReply) errors.push(`${field.label} refers to a missing or deleted record.`);
+      }
     }
   }
   const uniqueKeys: Record<string, string[]> = { products: ['sku'], assets: ['serialNumber'], serials: ['name'], users: ['email'], customModules: ['moduleId'], roles: ['name'] };
+  if (moduleId === 'projectPosts') {
+    if (data.body !== undefined && (typeof data.body !== 'string' || data.body.length > 10000)) errors.push('Post details must contain at most 10,000 characters.');
+    if (data.media !== undefined && (!Array.isArray(data.media) || data.media.length > 10 || data.media.some(item => !item || typeof item !== 'object' || typeof item.key !== 'string' || !/^files\/[a-zA-Z0-9-]+\/[a-zA-Z0-9._-]+$/.test(item.key)))) errors.push('A project post may include up to 10 uploaded media files.');
+    if (!String(data.body || '').trim() && (!Array.isArray(data.media) || !data.media.length)) errors.push('Add a comment, details or at least one media file.');
+    if (data.kind !== 'Update' && (data.progress !== undefined || data.stage)) errors.push('Only an update may change project progress or stage.');
+    if (data.pinned !== undefined && typeof data.pinned !== 'boolean') errors.push('Pinned must be true or false.');
+    if (data.parent) {
+      const parent = (store.projectPosts || []).find(row => row.id === data.parent);
+      if (parent && parent.project !== data.project) errors.push('A reply must belong to the same project as its parent.');
+      const visited = new Set<string>();
+      let next = String(data.parent);
+      while (next) {
+        if (next === data.id || visited.has(next)) { errors.push('Project replies cannot form a circular thread.'); break; }
+        visited.add(next); next = String(get(store, 'projectPosts', next)?.parent || '');
+      }
+    }
+  }
   for (const key of uniqueKeys[moduleId] || []) if (data[key] && live(store[moduleId]).some(r => r.id !== data.id && String(r[key]).toLowerCase() === String(data[key]).toLowerCase())) errors.push(`${key} already exists.`);
   if (['categories', 'customStatuses', 'dropdownOptions'].includes(moduleId)) {
     const normalized = (value: unknown) => String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-IN');
@@ -320,6 +342,9 @@ export function applyMutation(initialStore: Store, moduleId: string, action: Act
   if (action === 'restore' && !existing?.deletedAt && !existing?.archivedAt) throw new Error('This record is not deleted or archived.');
   if (action === 'permanentDelete' && !existing?.deletedAt) throw new Error('Move this record to the recycle bin before permanently deleting it.');
   const before = existing ? structuredClone(existing) : undefined;
+  if (moduleId === 'projectPosts' && ['archive', 'duplicate'].includes(action)) throw new Error('Project posts may be edited or moderated, not archived or duplicated.');
+  if (moduleId === 'projectPosts' && action === 'create' && safeData.parent && !get(store, 'projectPosts', String(safeData.parent))) throw new Error('Reply to an existing, undeleted project post.');
+  if (moduleId === 'projectPosts' && before) for (const key of ['project', 'parent', 'kind', 'progress', 'stage']) if (Object.prototype.hasOwnProperty.call(safeData, key) && safeData[key] !== before[key]) throw new Error('The project, reply thread and historical progress of a post cannot be changed.');
   const now = iso();
   if (action === 'delete' && moduleId === 'projects' && live(store.payments).some(payment => payment.project === id && payment.status === 'Received')) throw new Error('Archive this project to retain its payment history. Remove its received payments before deleting it.');
   if (action === 'delete' && moduleId === 'purchases' && live(store.supplierPayments).some(payment => payment.purchase === id && payment.status === 'Paid')) throw new Error('Archive this purchase to retain its payment history. Remove its supplier payments before deleting it.');
@@ -356,6 +381,13 @@ export function applyMutation(initialStore: Store, moduleId: string, action: Act
     }
   }
   for (const field of module.fields) if (['currency', 'number'].includes(field.type) && record[field.key] !== undefined && record[field.key] !== '') record[field.key] = field.type === 'currency' ? round(Number(record[field.key])) : Number(record[field.key]);
+  if (moduleId === 'projectPosts' && action === 'create') {
+    record.authorId = typeof actor === 'object' ? actor.id : undefined;
+    record.authorName = actorName(actor);
+    record.authorRole = typeof actor === 'object' ? actor.role : undefined;
+    record.postedAt = now;
+    record.createdById = record.authorId;
+  }
   if (!['delete', 'archive', 'permanentDelete'].includes(action)) {
     const errors = validateRecord(moduleId, record, store);
     if (errors.length) throw new Error(errors.join(' '));

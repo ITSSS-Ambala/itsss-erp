@@ -3,7 +3,7 @@ import { getChatGPTUser } from '../app/chatgpt-auth';
 import { createSeed } from './seed';
 import { sealVault, openVault } from './vault';
 import { resolveModules, type Store } from './schema';
-import { resolveRole, permit, visibleStore, hiddenFields, dropdownPermissionsFor, type AccessUser } from './access';
+import { resolveRole, permit, visibleStore, hiddenFields, dropdownPermissionsFor, projectCapabilitiesFor, type AccessUser } from './access';
 export { permit, visibleStore } from './access';
 export type { Store } from './schema';
 export async function identity() {
@@ -49,8 +49,10 @@ export async function saveWorkspace(store:Store,revision:number) {
 export function permissionsFor(store:Store,user:AccessUser) {
   return Object.fromEntries(resolveModules(store).map(module=>[module.id,Object.fromEntries(['view','add','edit','delete','export','approve','archive','restore','permanentDelete','download'].map(action=>[action,permit(user.role,module.id,action,store)]))]));
 }
-export function workspaceResponse(store:Store,revision:number,user:AccessUser,extra:{createdRecordId?:string;option?:{value:string;reused:boolean;module:string;field:string}}={}) {
-  return Response.json({store:visibleStore(store,user),revision,user,permissions:permissionsFor(store,user),dropdownPermissions:dropdownPermissionsFor(store,user),hiddenFields:Object.fromEntries(resolveModules(store).map(module=>[module.id,[...hiddenFields(store,user,module.id)]])),...extra},{headers:{'Cache-Control':'private, no-store'}});
+export function workspaceResponse(store:Store,revision:number,user:AccessUser,extra:{createdRecordId?:string;createdRecordModule?:string;option?:{value:string;reused:boolean;module:string;field:string}}={}) {
+  const scoped=visibleStore(store,user),{createdRecordModule,...details}=extra;
+  const createdRecord=createdRecordModule&&extra.createdRecordId?scoped[createdRecordModule]?.find(record=>record.id===extra.createdRecordId):undefined;
+  return Response.json({store:scoped,revision,user,permissions:permissionsFor(store,user),dropdownPermissions:dropdownPermissionsFor(store,user),projectCapabilities:projectCapabilitiesFor(store,user),hiddenFields:Object.fromEntries(resolveModules(store).map(module=>[module.id,[...hiddenFields(store,user,module.id)]])),...details,createdRecord},{headers:{'Cache-Control':'private, no-store'}});
 }
 export function requestActor(request:Request,user:AccessUser) {
   return {id:user.userId,name:user.displayName,email:user.email,role:user.role,device:(request.headers.get('user-agent')||'Web browser').slice(0,500),ip:(request.headers.get('cf-connecting-ip')||'Unavailable').slice(0,80)};

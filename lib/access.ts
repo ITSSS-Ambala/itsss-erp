@@ -1,5 +1,6 @@
 import { getDropdownConfig, moduleById, resolveModules, type ERPRecord, type Field, type Store } from './schema.ts';
 import { validateRecord, recalculate } from './engine.ts';
+import { validateLogoMetadata } from './media.ts';
 
 export type AccessUser = { userId: string; displayName: string; email?: string; memberId?: string; role: string; employee?: string; customer?: string };
 const live = (rows: ERPRecord[] = []) => rows.filter(row => !row.deletedAt && !row.archivedAt && row.status !== 'Inactive');
@@ -42,6 +43,12 @@ export function permit(roleValue: string, moduleId: string, actionValue: string,
   if (historyModules.has(moduleId) && !['view', 'export', 'download'].includes(action)) return false;
   if (['Super Admin', 'Admin'].includes(role)) return true;
   if (role === 'Unassigned') return false;
+  if (moduleId === 'projectPosts') {
+    if (!permit(roleValue, 'projects', 'view', store)) return false;
+    if (['view', 'download', 'export'].includes(action)) return action === 'view' || permit(roleValue, 'projects', action, store);
+    if (!['add', 'edit', 'delete'].includes(action) || role === 'Viewer') return false;
+    return ['Manager', 'Sales', 'Technician', 'Developer', 'Marketing', 'Accounts', 'Inventory', 'Client'].includes(role) || permit(roleValue, 'projects', 'add', store) || permit(roleValue, 'projects', 'edit', store);
+  }
   if (adminModules.has(moduleId) || moduleId === 'auditLogs') return false;
   if (moduleId === 'settings') return action === 'view';
   if (['Viewer', 'Client'].includes(role) && !['view', 'download', 'export'].includes(action)) return false;
@@ -73,7 +80,8 @@ export function permit(roleValue: string, moduleId: string, actionValue: string,
 function technicianScope(store: Store, employee: string) {
   const assigned = (row: ERPRecord) => row.technician === employee || row.assignedTo === employee || row.employee === employee;
   const work = ['technicianJobs', 'workOrders', 'tasks', 'surveys', 'tickets', 'remoteSupport', 'allocations'].flatMap(moduleId => live(store[moduleId]).filter(assigned));
-  const projects = new Set([...work.map(row => row.project), ...live(store.projects).filter(row => Array.isArray(row.technicians) && row.technicians.includes(employee)).map(row => row.id)].filter(Boolean));
+  const assignedSites = new Set(live(store.sites).filter(assigned).map(row => row.id));
+  const projects = new Set([...work.map(row => row.project), ...live(store.projects).filter(row => Array.isArray(row.technicians) && row.technicians.includes(employee) || assignedSites.has(row.site)).map(row => row.id)].filter(Boolean));
   const sites = new Set([...work.map(row => row.site), ...live(store.sites).filter(assigned).map(row => row.id), ...live(store.projects).filter(row => projects.has(row.id)).map(row => row.site)].filter(Boolean));
   const customers = new Set([...work.map(row => row.customer), ...live(store.sites).filter(row => sites.has(row.id)).map(row => row.customer), ...live(store.projects).filter(row => projects.has(row.id)).map(row => row.customer)].filter(Boolean));
   return { assigned, projects, sites, customers };
@@ -83,6 +91,18 @@ export function canViewRecord(store: Store, user: AccessUser, moduleId: string, 
   if (depth > 4 || !permit(user.role, moduleId, 'view', store)) return false;
   if (['Super Admin', 'Admin'].includes(user.role)) return true;
   if (moduleId === 'settings') return true;
+  if (moduleId === 'projectPosts') {
+    if (row.deletedAt && row.authorId !== user.userId) return false;
+    let parentId = row.parent;
+    const seen = new Set<string>([row.id]);
+    while (parentId) {
+      const parent = (store.projectPosts || []).find(post => post.id === parentId);
+      if (!parent || parent.deletedAt || parent.archivedAt || parent.project !== row.project || seen.has(parent.id)) return false;
+      seen.add(parent.id); parentId = parent.parent;
+    }
+    const linked = (store.projects || []).find(project => project.id === row.project && !project.deletedAt);
+    return Boolean(linked && canViewRecord(store, user, 'projects', linked, depth + 1));
+  }
   const owns = row.createdById === user.userId || row.author === user.userId || Boolean(user.employee && row.author === user.employee);
   if (moduleId === 'notes' && row.type === 'Private' && !owns) return false;
   if (moduleId === 'savedViews' && !row.shared && row.createdById !== user.userId && !(user.employee && row.employee === user.employee)) return false;
@@ -128,6 +148,19 @@ export function hiddenFields(store: Store, user: AccessUser, moduleId: string): 
   return fields;
 }
 
+export type ProjectCapabilities = { post: boolean; updateProgress: boolean; managePosts: boolean };
+export function projectCapabilities(store: Store, user: AccessUser, projectId: string): ProjectCapabilities {
+  const project = (store.projects || []).find(row => row.id === projectId && !row.deletedAt && !row.archivedAt);
+  if (!project || !canViewRecord(store, user, 'projects', project)) return { post: false, updateProgress: false, managePosts: false };
+  const admin = ['Super Admin', 'Admin'].includes(user.role), masks = hiddenFields(store, user, 'projects');
+  const post = permit(user.role, 'projectPosts', 'add', store) && !hiddenFields(store, user, 'projectPosts').has('body');
+  return { post, updateProgress: post && !masks.has('progress') && !masks.has('status') && (admin || user.role === 'Technician' || permit(user.role, 'projects', 'edit', store)), managePosts: admin };
+}
+
+export function projectCapabilitiesFor(store: Store, user: AccessUser): Record<string, ProjectCapabilities> {
+  return Object.fromEntries((store.projects || []).filter(row => !row.deletedAt && canViewRecord(store, user, 'projects', row)).map(row => [row.id, projectCapabilities(store, user, row.id)]));
+}
+
 export function canCreateDropdownOption(store: Store, user: AccessUser, moduleId: string, field: Field): boolean {
   if (!permit(user.role, moduleId, 'view', store) || !(permit(user.role, moduleId, 'add', store) || permit(user.role, moduleId, 'edit', store)) || hiddenFields(store, user, moduleId).has(field.key)) return false;
   if (user.role === 'Technician' && (!user.employee || !live(store.employees).some(row => row.id === user.employee))) return false;
@@ -169,6 +202,19 @@ export function visibleStore(store: Store, user: AccessUser): Store {
 const approvalModules = new Set(['expenses', 'employeeExpenses', 'payroll', 'commissions', 'purchaseRequests', 'purchaseOrders', 'purchases', 'stockTransfers', 'allocations']);
 const approved = (row: Partial<ERPRecord>) => row.approvalStatus === 'Approved' || ['Approved', 'Paid', 'Reimbursed', 'Ordered', 'Received', 'Completed', 'Issued', 'Used', 'Returned'].includes(String(row.status));
 export function assertMutationAccess(store: Store, user: AccessUser, moduleId: string, action: string, data: Partial<ERPRecord>, existing?: ERPRecord) {
+  if (moduleId === 'projectPosts') {
+    const target = { ...existing, ...data }, capabilities = projectCapabilities(store, user, String(target.project || ''));
+    if (!capabilities.post || existing && !canViewRecord(store, user, moduleId, existing)) throw new Error('FORBIDDEN: You cannot post in this project.');
+    if (!['create', 'update', 'delete', 'restore', 'permanentDelete'].includes(action)) throw new Error('Unsupported project post action.');
+    if (existing && !capabilities.managePosts && existing.authorId !== user.userId) throw new Error('FORBIDDEN: Only the author or an administrator can manage this post.');
+    if (action === 'permanentDelete' && !capabilities.managePosts) throw new Error('FORBIDDEN: Administrator permission is required.');
+    for (const key of ['authorId', 'authorName', 'authorRole', 'postedAt', 'authorEmployee']) if (Object.prototype.hasOwnProperty.call(data, key)) throw new Error('FORBIDDEN: Post authorship is assigned by the server.');
+    if (existing) for (const key of ['project', 'parent', 'kind', 'progress', 'stage']) if (Object.prototype.hasOwnProperty.call(data, key) && data[key] !== existing[key]) throw new Error('The project, reply thread and historical progress of a post cannot be changed.');
+    if (action === 'create' && (target.kind === 'Update' || data.progress !== undefined || data.stage) && !capabilities.updateProgress) throw new Error('FORBIDDEN: You can comment but cannot update project progress.');
+    if (Object.prototype.hasOwnProperty.call(data, 'pinned') && data.pinned !== existing?.pinned && !capabilities.managePosts && !(action === 'create' && data.pinned === false)) throw new Error('FORBIDDEN: Only administrators can pin project posts.');
+    for (const key of hiddenFields(store, user, moduleId)) if (Object.prototype.hasOwnProperty.call(data, key)) throw new Error('FORBIDDEN: You cannot change a restricted field.');
+    return;
+  }
   if (!permit(user.role, moduleId, 'view', store) || !permit(user.role, moduleId, action, store)) throw new Error('FORBIDDEN: Your role cannot make this change.');
   if (existing && !canViewRecord(store, user, moduleId, existing)) throw new Error('FORBIDDEN: This record is outside your assigned scope.');
   const target = { ...existing, ...data, id: existing?.id || 'new', createdById: existing?.createdById || user.userId } as ERPRecord;
@@ -188,23 +234,42 @@ export function assertMutationAccess(store: Store, user: AccessUser, moduleId: s
   if (!['Super Admin', 'Admin'].includes(user.role) && moduleId === 'notes' && target.type === 'Private' && existing && existing.createdById !== user.userId && !(user.employee && existing.author === user.employee)) throw new Error('FORBIDDEN: This note is private.');
 }
 
-function containsFile(value: unknown, key: string, depth = 0): boolean {
-  if (depth > 8 || !value || typeof value !== 'object') return false;
-  if (Array.isArray(value)) return value.some(item => containsFile(item, key, depth + 1));
-  const record = value as Record<string, unknown>;
-  if (record.key === key) return true;
-  return Object.values(record).some(item => containsFile(item, key, depth + 1));
+function containsFile(value: unknown, key: string): boolean {
+  return Array.isArray(value) && value.some(item => item && typeof item === 'object' && !Array.isArray(item) && item.key === key);
 }
 export function canDownloadFile(store: Store, user: AccessUser, key: string, metadata: Record<string, string> = {}): boolean {
-  if (user.role === 'Technician' && !user.employee || user.role === 'Client' && !user.customer) return false;
   const moduleId = metadata.module || 'documents';
+  const definitions = resolveModules(store);
+  const recordHasFile = (id: string, row: ERPRecord, respectMasks = false) => definitions.find(module => module.id === id)?.fields.some(field => ['file', 'image'].includes(field.type) && (!respectMasks || !hiddenFields(store, user, id).has(field.key)) && containsFile(row[field.key], key));
+  const visibleFile = (id: string, row: ERPRecord) => {
+    return recordHasFile(id, row, true) && canViewRecord(store, user, id, row);
+  };
+  // Branding is shared only while the image is the currently linked company logo.
+  if (permit(user.role, 'settings', 'view', store) && !hiddenFields(store, user, 'settings').has('logo')) {
+    const logo = live(store.settings).flatMap(row => Array.isArray(row.logo) ? row.logo : []).find(file => file?.key === key);
+    if (logo) try { validateLogoMetadata({ size: Number(metadata.size ?? logo.size), httpMetadata: { contentType: metadata.contentType || logo.type } }); return true; } catch { /* Unsafe legacy logos do not become shared files. */ }
+  }
+  if (user.role === 'Technician' && !user.employee || user.role === 'Client' && !user.customer) return false;
+  if (moduleId === 'projectPosts') {
+    if (!permit(user.role, 'projects', 'view', store)) return false;
+    if (['Super Admin', 'Admin'].includes(user.role)) return true;
+    const project = (store.projects || []).find(row => row.id === metadata.projectId && !row.deletedAt);
+    if (!project || !canViewRecord(store, user, 'projects', project) || hiddenFields(store, user, 'projectPosts').has('media')) return false;
+    const references = (store.projectPosts || []).filter(row => containsFile(row.media, key));
+    if (references.length) return references.some(row => !row.deletedAt && !row.archivedAt && visibleFile('projectPosts', row));
+    const age = Date.now() - new Date(metadata.uploadedAt || '').getTime();
+    return metadata.creatorId === user.userId && age >= 0 && age <= 86400000 && projectCapabilities(store, user, project.id).post;
+  }
   if (!permit(user.role, moduleId, 'download', store) || !permit(user.role, moduleId, 'view', store)) return false;
   if (['Super Admin', 'Admin'].includes(user.role)) return true;
   if (metadata.recordId) {
     const row = (store[moduleId] || []).find(record => record.id === metadata.recordId && !record.deletedAt);
-    if (row && canViewRecord(store, user, moduleId, row)) return true;
+    if (!row || !canViewRecord(store, user, moduleId, row)) return false;
+    if (row && visibleFile(moduleId, row)) return true;
+    if (recordHasFile(moduleId, row)) return false;
   }
-  for (const [id, rows] of Object.entries(store)) if (rows.some(row => !row.deletedAt && containsFile(row, key) && canViewRecord(store, user, id, row))) return true;
+  for (const [id, rows] of Object.entries(store)) if (rows.some(row => !row.deletedAt && visibleFile(id, row))) return true;
+  if (Object.entries(store).some(([id, rows]) => rows.some(row => recordHasFile(id, row)))) return false;
   return metadata.creatorId === user.userId;
 }
 
