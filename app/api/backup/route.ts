@@ -1,6 +1,6 @@
 import { loadWorkspace, saveWorkspace, apiError, checkOrigin, requestActor } from '../../../lib/server';
 import { validatedRestore } from '../../../lib/access';
-import { env } from 'cloudflare:workers';
+import { env } from '../../../lib/runtime';
 import { sealVault, openVault } from '../../../lib/vault';
 export async function GET() {
   try {

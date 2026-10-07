@@ -1,0 +1,130 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { resolve, relative } from 'node:path';
+import { hashPassword } from '../lib/hostinger/password.ts';
+
+await mkdir(resolve('outputs'), { recursive: true });
+const state = await mkdtemp(resolve('outputs/hostinger-smoke-'));
+const temporaryListener = createServer();
+await new Promise(done => temporaryListener.listen(0, '127.0.0.1', done));
+const port = temporaryListener.address().port;
+await new Promise(done => temporaryListener.close(done));
+const origin = `http://127.0.0.1:${port}`;
+const password = randomBytes(24).toString('hex');
+const passwordHash = await hashPassword(password);
+const staffEmail = 'staff-test@itsss.test';
+const env = { ...process.env, NODE_ENV: 'production', HOSTNAME: '0.0.0.0', PORT: String(port), ERP_PUBLIC_URL: origin, ERP_DATA_DIR: state, ERP_ADMIN_EMAIL: 'deployment-test@itsss.test', ERP_ADMIN_NAME: 'Deployment Test', ERP_ADMIN_PASSWORD_HASH: passwordHash, ERP_VAULT_KEY: randomBytes(32).toString('base64'), ERP_AUTH_USERS: JSON.stringify([{ email: staffEmail, name: 'Test Viewer', passwordHash }]), ERP_SESSION_HOURS: '12' };
+const isolated = process.argv.includes('--standalone');
+let isolatedServerDirectory;
+let server;
+let serverOutput = '';
+const checks = [];
+function record(name) { checks.push(name); console.log(`PASS ${name}`); }
+async function start() {
+  serverOutput = '';
+  server = spawn(process.execPath, [isolated ? resolve(isolatedServerDirectory, 'server.js') : 'scripts/start-hostinger.mjs'], { env, cwd: isolatedServerDirectory, stdio: ['ignore', 'pipe', 'pipe'] });
+  server.stdout.on('data', data => { serverOutput = (serverOutput + data).slice(-6000); });
+  server.stderr.on('data', data => { serverOutput = (serverOutput + data).slice(-6000); });
+  for (let attempt = 0; attempt < 120; attempt++) {
+    if (server.exitCode !== null) throw new Error(`Production server exited: ${serverOutput}`);
+    try { if ((await fetch(origin + '/login', { signal: AbortSignal.timeout(1000) })).ok) return; } catch {}
+    await new Promise(done => setTimeout(done, 500));
+  }
+  throw new Error(`Production server was not ready: ${serverOutput}`);
+}
+async function stop() {
+  if (!server || server.exitCode !== null) return;
+  const exited = new Promise(done => server.once('exit', done));
+  server.kill('SIGTERM'); await exited;
+}
+async function request(path, options = {}, expected = 200) {
+  const response = await fetch(origin + path, { ...options, signal: AbortSignal.timeout(30000) });
+  assert.equal(response.status, expected, `${path} returned ${response.status}`);
+  return response;
+}
+try {
+  if (isolated) {
+    isolatedServerDirectory = await mkdtemp(resolve(tmpdir(), 'itsss-standalone-'));
+    await cp(resolve('.next/standalone'), isolatedServerDirectory, { recursive: true, dereference: true });
+  }
+  await start();
+  const html = await (await request('/')).text();
+  await request('/favicon.svg');
+  const assets = [...new Set([...html.matchAll(/(?:src|href)="([^"\s]*\/_next\/static\/[^"\s]+)"/g)].map(match => match[1].replaceAll('&amp;', '&')))];
+  assert.ok(assets.some(asset => asset.endsWith('.js')), 'Production page must include JavaScript assets');
+  assert.ok(assets.some(asset => asset.endsWith('.css')), 'Production page must include CSS assets');
+  for (const asset of assets) {
+    const response = await request(asset);
+    assert.ok(!response.headers.get('content-type')?.includes('text/html'), 'Static assets must not return an HTML fallback');
+  }
+  record('production pages, public assets and built JavaScript/CSS assets');
+  for (const path of ['/api/workspace', '/api/files?key=files/test/test.txt', '/api/backup']) await request(path, {}, 401);
+  await request('/api/workspace', { headers: { 'oai-authenticated-user-id': 'forged-owner', 'oai-authenticated-user-email': env.ERP_ADMIN_EMAIL } }, 401);
+  record('anonymous and forged identity-header access rejected');
+  const staffSignIn = await request('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify({ email: staffEmail, password }) });
+  const staffCookie = staffSignIn.headers.get('set-cookie').split(';')[0];
+  await request('/api/workspace', { headers: { Cookie: staffCookie } }, 403);
+  record('additional accounts cannot claim an uninitialized workspace');
+  const loginBody = JSON.stringify({ email: env.ERP_ADMIN_EMAIL, password, returnTo: '//evil.test' });
+  await request('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://evil.test' }, body: loginBody }, 403);
+  await request('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: loginBody }, 403);
+  await request('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify({ email: env.ERP_ADMIN_EMAIL, password: 'wrong password' }) }, 401);
+  const signedIn = await request('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: loginBody });
+  assert.equal((await signedIn.json()).returnTo, '/');
+  const setCookie = signedIn.headers.get('set-cookie');
+  assert.match(setCookie, /HttpOnly/i); assert.match(setCookie, /SameSite=Lax/i);
+  const cookie = setCookie.split(';')[0];
+  record('password login, CSRF checks and safe return URL');
+  const headers = { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' };
+  let workspace = await (await request('/api/workspace', { headers })).json();
+  assert.equal(workspace.user.role, 'Super Admin');
+  await request('/api/workspace', { headers: { Cookie: staffCookie } }, 403);
+  const viewerRole = workspace.store.roles.find(role => role.name === 'Viewer');
+  assert.ok(viewerRole);
+  workspace = await (await request('/api/workspace', { method: 'POST', headers, body: JSON.stringify({ revision: workspace.revision, module: 'users', action: 'create', data: { name: 'Test Viewer', email: staffEmail, role: viewerRole.id, status: 'Active' } }) })).json();
+  const viewerWorkspace = await (await request('/api/workspace', { headers: { Cookie: staffCookie } })).json();
+  assert.equal(viewerWorkspace.user.role, 'Viewer');
+  await request('/api/workspace', { method: 'POST', headers: { ...headers, Cookie: staffCookie }, body: JSON.stringify({ revision: viewerWorkspace.revision, module: 'customers', action: 'create', data: { name: 'Forbidden viewer write' } }) }, 403);
+  record('team credentials require ERP membership and enforce assigned roles');
+  const mutation = { revision: workspace.revision, module: 'customers', action: 'create', data: { name: 'Production deployment verification', status: 'Active' } };
+  const created = await (await request('/api/workspace', { method: 'POST', headers, body: JSON.stringify(mutation) })).json();
+  assert.ok(created.createdRecordId);
+  await request('/api/workspace', { method: 'POST', headers, body: JSON.stringify(mutation) }, 409);
+  record('workspace initialization, record save and stale revision rejection');
+  const bytes = Buffer.from('Private upload: production verification.');
+  const form = new FormData(); form.set('module', 'documents'); form.set('file', new Blob([bytes], { type: 'text/plain' }), 'verification.txt');
+  const uploaded = await (await request('/api/files', { method: 'POST', headers: { Cookie: cookie, Origin: origin }, body: form })).json();
+  assert.ok(uploaded.key);
+  assert.deepEqual(Buffer.from(await (await request(uploaded.url, { headers: { Cookie: cookie } })).arrayBuffer()), bytes);
+  const partial = await request(uploaded.url, { headers: { Cookie: cookie, Range: 'bytes=2-6' } }, 206);
+  assert.deepEqual(Buffer.from(await partial.arrayBuffer()), bytes.subarray(2, 7));
+  await request(uploaded.url, {}, 401);
+  record('private upload, byte-identical download and range response');
+  const backup = await (await request('/api/backup', { headers: { Cookie: cookie } })).json();
+  assert.equal(backup.format, 'itsss-erp-v1');
+  assert.ok(backup.store.vault.every(record => record.encrypted && !record.password));
+  record('authenticated encrypted backup');
+  await stop(); await start();
+  const reloaded = await (await request('/api/workspace', { headers: { Cookie: cookie } })).json();
+  assert.ok(reloaded.store.customers.some(row => row.id === created.createdRecordId));
+  assert.deepEqual(Buffer.from(await (await request(uploaded.url, { headers: { Cookie: cookie } })).arrayBuffer()), bytes);
+  record('records, sessions and uploaded files survive server restart');
+  await request('/api/auth/logout', { method: 'POST', headers: { Cookie: cookie, Origin: origin }, redirect: 'manual' }, 303);
+  await request('/api/workspace', { headers: { Cookie: cookie } }, 401);
+  record('logout revokes server-side session');
+  await writeFile(resolve(`outputs/hostinger-${isolated ? 'standalone' : 'smoke'}-verification.json`), JSON.stringify({ deploymentUrl: 'https://crm.itsss.co.in', runtime: 'Next.js / Node.js 24', entryFile: '.next/standalone/server.js', isolatedFromSourceDependencies: isolated, checks, passed: true, scope: 'local production server; live Hostinger deployment not performed' }, null, 2));
+} finally {
+  await stop();
+  const cleanupPath = relative(resolve('outputs'), state);
+  assert.ok(cleanupPath && !cleanupPath.startsWith('..'), 'Smoke cleanup must stay inside outputs');
+  await rm(state, { recursive: true, force: true });
+  if (isolatedServerDirectory) {
+    const serverCleanupPath = relative(resolve(tmpdir()), isolatedServerDirectory);
+    assert.ok(serverCleanupPath && !serverCleanupPath.startsWith('..') && serverCleanupPath.startsWith('itsss-standalone-'), 'Standalone cleanup must stay inside its temporary directory');
+    await rm(isolatedServerDirectory, { recursive: true, force: true });
+  }
+}
