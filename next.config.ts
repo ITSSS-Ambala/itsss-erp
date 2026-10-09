@@ -1,7 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  poweredByHeader: false,
+  output: 'standalone',
+  outputFileTracingRoot: process.cwd(),
+  serverExternalPackages: ['node:sqlite'],
 };
 
 export default nextConfig;

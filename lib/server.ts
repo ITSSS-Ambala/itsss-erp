@@ -1,4 +1,5 @@
-import { env } from 'cloudflare:workers';
+import { env } from './runtime';
+import { getHostingerConfig } from './hostinger/config';
 import { getChatGPTUser } from '../app/chatgpt-auth';
 import { createSeed } from './seed';
 import { sealVault, openVault } from './vault';
@@ -16,6 +17,7 @@ export async function loadWorkspace() {
   const identityUser = await identity();
   let row = await env.DB.prepare('SELECT data, revision FROM erp_workspace WHERE id = ?').bind('main').first<{data:string;revision:number}>();
   if (!row) {
+    if (identityUser.email !== getHostingerConfig().ownerEmail) throw new Error('FORBIDDEN: The administrator must initialize this workspace first.');
     const data = createSeed();
     const ownerRole = data.roles.find(role => role.name === 'Super Admin');
     if (!ownerRole) throw new Error('Administrator role is unavailable.');
@@ -59,10 +61,11 @@ export function requestActor(request:Request,user:AccessUser) {
 }
 export function apiError(error:unknown) {
   const message=error instanceof Error?error.message:'Unexpected error';
+  if (message.startsWith('CONFIG:')) return Response.json({error:'Server configuration is incomplete. Please contact the administrator.'},{status:503,headers:{'Cache-Control':'private, no-store'}});
   return Response.json({error:message.replace(/^(AUTH|FORBIDDEN|CONFLICT): /,'')},{status:message.startsWith('AUTH:')?401:message.startsWith('FORBIDDEN:')?403:message.startsWith('CONFLICT:')?409:400,headers:{'Cache-Control':'private, no-store'}});
 }
 export function checkOrigin(request:Request) {
   const origin=request.headers.get('origin');
-  if(origin&&origin!==new URL(request.url).origin)throw new Error('FORBIDDEN: Invalid request origin.');
+  if(!origin||origin!==getHostingerConfig().origin)throw new Error('FORBIDDEN: Invalid request origin.');
   if(request.headers.get('sec-fetch-site')==='cross-site')throw new Error('FORBIDDEN: Cross-site requests are not allowed.');
 }
