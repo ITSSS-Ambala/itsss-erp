@@ -24,6 +24,10 @@ export function runtimeDatabase(): DatabaseSync {
       token_hash TEXT PRIMARY KEY NOT NULL, email TEXT NOT NULL,
       credential_hash TEXT NOT NULL, expires_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS auth_passwords (
+      member_id TEXT PRIMARY KEY NOT NULL, password_hash TEXT NOT NULL,
+      configuration_hash TEXT
+    );
     CREATE TABLE IF NOT EXISTS auth_attempts (
       account_key TEXT PRIMARY KEY NOT NULL, started_at INTEGER NOT NULL,
       attempts INTEGER NOT NULL

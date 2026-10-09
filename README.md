@@ -60,23 +60,31 @@ Next.js build with the same private configuration.
 ## Access and persistence
 
 The configured administrator initializes a new workspace as Super Admin.
-Additional logins need both a credential in `ERP_AUTH_USERS` and an active user
-record/role in the workspace. Technician and Client mappings are enforced by the
-existing access policies. Public identity headers and old mock cookies are ignored.
+Create additional users in **Settings → Users**, assign an active role, then use
+**Set password**. The password dialog also opens after creating a user. Existing
+`ERP_AUTH_USERS` credentials continue to work for active workspace members.
+Technician and Client mappings are enforced by the existing access policies. Public identity headers and old mock cookies are ignored.
 
 Sessions use opaque random tokens, server-side expiry and revocation, and secure
 HttpOnly cookies in production. Passwords use salted scrypt hashes. Login
-attempt limits and same-origin mutation checks apply. UI password resets and
-two-factor authentication remain unavailable.
+attempt limits and same-origin mutation checks apply. Administrators can set or
+reset passwords from a user’s details or edit form. Every user can choose
+**Change password** from the navigation or profile menu and verify their current
+password. Passwords require at least 12 characters (or the higher company policy)
+and at most 256 bytes. Saving a password revokes that user’s existing sessions.
+Two-factor authentication remains unavailable.
 
-Business records and sessions persist in `workspace.sqlite`; files persist under
-the private `files/` directory. Revision checks prevent stale writes. Vault
+Business records, password hashes and sessions persist in `workspace.sqlite`;
+files persist under the private `files/` directory. Revision checks prevent stale writes. Vault
 records remain AES-256-GCM encrypted in storage and JSON backups.
 
 A fresh workspace seeds demo records. Deployment does not copy the old local
 database, uploads or business records. Back up SQLite consistently, the file
 directory and the vault key. Manual JSON backups contain file references, not
-uploaded bytes. This runtime targets one server/persistent disk, not replicas
+uploaded bytes or login password hashes. Retain the SQLite database to retain
+managed login passwords; restoring a JSON backup leaves current passwords intact.
+Rotating a configured environment password hash overrides its managed password
+for account recovery. This runtime targets one server/persistent disk, not replicas
 with independent local storage.
 
 ## Verification

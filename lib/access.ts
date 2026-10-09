@@ -185,7 +185,7 @@ export function visibleStore(store: Store, user: AccessUser): Store {
       const safe = { ...row };
       for (const key of hidden) delete safe[key];
       if (!['Super Admin', 'Admin'].includes(user.role)) for (const key of ['ip', 'device', 'oldValue', 'newValue', 'actorId', 'lastLogin']) delete safe[key];
-      if (moduleId === 'settings' && !['Super Admin', 'Admin'].includes(user.role)) return Object.fromEntries(Object.entries(safe).filter(([key]) => ['id', 'name', 'fullName', 'logo', 'brandColor', 'currency', 'demo'].includes(key))) as ERPRecord;
+      if (moduleId === 'settings' && !['Super Admin', 'Admin'].includes(user.role)) return Object.fromEntries(Object.entries(safe).filter(([key]) => ['id', 'name', 'fullName', 'logo', 'brandColor', 'currency', 'demo', 'passwordMinLength'].includes(key))) as ERPRecord;
       return safe;
     });
   }

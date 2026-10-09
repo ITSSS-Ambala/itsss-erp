@@ -45,6 +45,7 @@ export async function POST(request:Request) {
     const prepare=(raw:unknown)=>{
       if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('Record data must be an object.');
       const data={...raw} as Partial<ERPRecord>;
+      if(moduleId==='users'&&['password','passwordHash','newPassword','currentPassword'].some(key=>key in data))throw new Error('Use Set password to manage login credentials.');
       for(const key of ['id','createdAt','updatedAt','createdBy','createdById','deletedAt','deletedBy','archivedAt','systemGenerated','identityId'])delete data[key];
       if(user.role==='Technician') {
         for(const key of ['technician','assignedTo','employee'])if(module.fields.some(field=>field.key===key)&&(!data[key]||action==='create')) {

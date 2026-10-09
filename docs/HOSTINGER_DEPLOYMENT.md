@@ -136,21 +136,27 @@ that administrator as Super Admin and seeds the existing demo records.
 
 To allow a team member:
 
-1. Add an active user and role in the ERP's Users module. Map Technician/Client
-   users to their employee/customer as before.
-2. Generate that person's password hash using `npm run auth:hash` and add the
-   matching email to `ERP_AUTH_USERS`, for example:
+1. Open **Settings → Users** and create an active user with an active role.
+   Map Technician/Client users to their employee/customer as before.
+2. Set their login password in the dialog that opens after creating the user.
+   For an existing user, open their details or edit form and choose **Set password**.
+3. The user can sign in with their email and the new password. No environment
+   change or redeployment is needed to add managed credentials.
 
-   ```json
-   [{"email":"staff@example.com","name":"Staff Member","passwordHash":"PASTE_GENERATED_HASH"}]
-   ```
+Every user can choose **Change password** from the navigation or profile menu.
+Changing your own password requires your current password. Passwords require at
+least 12 characters, or the higher company minimum, and at most 256 bytes.
+Password changes revoke all existing sessions for that user.
 
-3. Apply the runtime environment change. The account needs both a configured
-   credential and an active ERP membership/role to access business data.
+Existing `ERP_AUTH_USERS` accounts remain supported. UI passwords are salted
+scrypt hashes in a separate SQLite table; they never enter workspace responses,
+audit payloads or JSON backups. Back up SQLite to retain managed passwords.
+Rotating `ERP_ADMIN_PASSWORD_HASH` or an existing `ERP_AUTH_USERS` hash overrides
+that account’s managed password and revokes its sessions for recovery. Keep the
+configured administrator environment variables in place.
 
-Password reset and two-factor authentication are not implemented in the UI.
-Password changes are managed through private environment configuration. The old
-ChatGPT identity headers and development mock cookies no longer grant access.
+Two-factor authentication remains unavailable. The old ChatGPT identity headers
+and development mock cookies no longer grant access.
 
 ## Records, files and backups
 
