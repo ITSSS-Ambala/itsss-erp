@@ -24,8 +24,8 @@ if (!process.stdin.isTTY) {
       process.stdin.on('keypress', keypress);
     });
   }
-  const password = await hiddenPrompt('New administrator password (at least 12 characters; input hidden): ');
-  const confirmation = await hiddenPrompt('Confirm password: ');
+  const password = (await hiddenPrompt('New administrator password (at least 12 characters; input hidden): ')).trim();
+  const confirmation = (await hiddenPrompt('Confirm password: ')).trim();
   if (password !== confirmation) throw new Error('Passwords do not match.');
   console.log('Set ERP_ADMIN_PASSWORD_HASH to the following value in Hostinger environment settings:');
   console.log(await hashPassword(password));

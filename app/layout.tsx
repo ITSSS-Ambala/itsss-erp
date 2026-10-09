@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ITSSS-ERP",
+  title: "ERP-ITSSS",
   description: "One workspace for your people, projects, and smarter business.",
   icons: {
     icon: "/favicon.svg",
