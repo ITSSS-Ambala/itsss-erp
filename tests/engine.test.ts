@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { applyMutation, validateRecord, calculateMetrics, getReceivables, getCalendarEvents, runAutomations } from '../lib/engine.ts';
 // @ts-ignore -- native Node TypeScript import.
 import { modules, type Store, type ERPRecord } from '../lib/schema.ts';
+import { synchronizeNotifications } from '../lib/notifications.ts';
 
 const today = '2026-10-06';
 
@@ -302,6 +303,7 @@ test('project completion creates only one customer handover follow-up', () => {
 
 test('AMC expiry automation creates one renewal lead and avoids duplicate daily alerts', () => {
   const store = fresh();
+  store.users = [{ id: 'owner', name: 'Owner', role: 'Super Admin', status: 'Active' }];
   store.amc = [{ id: 'amc-a', name: 'Aster annual AMC', customer: 'customer-a', startDate: '2025-10-20', endDate: '2026-10-20', amount: 6000, visits: 4, visitsCompleted: 2, technician: 'employee-a', status: 'Active' }];
   const now = new Date('2026-10-06T12:00:00Z');
   const first = runAutomations(store, now);
@@ -309,9 +311,11 @@ test('AMC expiry automation creates one renewal lead and avoids duplicate daily 
   assert.equal(renewal.length, 1);
   assert.equal(renewal[0].customer, 'customer-a');
   assert.equal(renewal[0].budget, 6000);
-  assert.ok(active(first.store, 'notifications').some(notification => notification.type === 'AMC Renewal'));
-  const second = runAutomations(first.store, now);
+  const notified = synchronizeNotifications(first.store, now);
+  assert.ok(active(notified.store, 'notifications').some(notification => notification.type === 'AMC Renewal' && notification.recipientUserId === 'owner'));
+  const second = runAutomations(notified.store, now);
   assert.equal(second.created, 0);
+  assert.equal(synchronizeNotifications(second.store, now).changed, 0);
   assert.equal(active(second.store, 'leads').length, 1);
   const tomorrow = runAutomations(second.store, new Date('2026-10-07T12:00:00Z'));
   assert.equal(active(tomorrow.store, 'leads').length, 1);

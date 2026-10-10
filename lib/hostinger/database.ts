@@ -32,6 +32,10 @@ export function runtimeDatabase(): DatabaseSync {
       account_key TEXT PRIMARY KEY NOT NULL, started_at INTEGER NOT NULL,
       attempts INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS notification_reads (
+      member_id TEXT NOT NULL, notification_id TEXT NOT NULL, read_at TEXT NOT NULL,
+      PRIMARY KEY (member_id, notification_id)
+    );
   `);
   return connection;
 }

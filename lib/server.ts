@@ -5,6 +5,9 @@ import { createSeed } from './seed';
 import { sealVault, openVault } from './vault';
 import { resolveModules, type Store } from './schema';
 import { resolveRole, permit, visibleStore, hiddenFields, dropdownPermissionsFor, projectCapabilitiesFor, type AccessUser } from './access';
+import { runAutomations, recalculate } from './engine';
+import { synchronizeNotifications, inboxNotifications } from './notifications';
+import { notificationReadDates } from './hostinger/notification-reads';
 export { permit, visibleStore } from './access';
 export type { Store } from './schema';
 export async function identity() {
@@ -48,13 +51,33 @@ export async function saveWorkspace(store:Store,revision:number) {
   if(result.meta.changes!==1)throw new Error('CONFLICT: Another update arrived. Refresh and try again.');
   return revision+1;
 }
+export async function loadNotificationWorkspace() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const loaded = await loadWorkspace(), automated = runAutomations(loaded.store);
+    const now = new Date();
+    const notifications = synchronizeNotifications(automated.store, now, automated.created ? recalculate(structuredClone(loaded.store), now) : undefined);
+    try {
+      const revision = automated.created || notifications.changed ? await saveWorkspace(notifications.store, loaded.revision) : loaded.revision;
+      return { store: notifications.store, revision, user: loaded.user };
+    } catch (error) {
+      if (attempt === 2 || !(error instanceof Error) || !error.message.startsWith('CONFLICT:')) throw error;
+    }
+  }
+  throw new Error('CONFLICT: Another update arrived. Please refresh.');
+}
+export function notificationResponseData(store:Store,user:AccessUser) {
+  const notifications = inboxNotifications(store,user,notificationReadDates(user.memberId));
+  return { notifications, unreadCount: notifications.filter(row => !row.read).length, checkedAt: new Date().toISOString() };
+}
 export function permissionsFor(store:Store,user:AccessUser) {
   return Object.fromEntries(resolveModules(store).map(module=>[module.id,Object.fromEntries(['view','add','edit','delete','export','approve','archive','restore','permanentDelete','download'].map(action=>[action,permit(user.role,module.id,action,store)]))]));
 }
 export function workspaceResponse(store:Store,revision:number,user:AccessUser,extra:{createdRecordId?:string;createdRecordModule?:string;option?:{value:string;reused:boolean;module:string;field:string}}={}) {
   const scoped=visibleStore(store,user),{createdRecordModule,...details}=extra;
+  const inbox=notificationResponseData(store,user);
+  scoped.notifications=inbox.notifications;
   const createdRecord=createdRecordModule&&extra.createdRecordId?scoped[createdRecordModule]?.find(record=>record.id===extra.createdRecordId):undefined;
-  return Response.json({store:scoped,revision,user,permissions:permissionsFor(store,user),dropdownPermissions:dropdownPermissionsFor(store,user),projectCapabilities:projectCapabilitiesFor(store,user),hiddenFields:Object.fromEntries(resolveModules(store).map(module=>[module.id,[...hiddenFields(store,user,module.id)]])),...details,createdRecord},{headers:{'Cache-Control':'private, no-store'}});
+  return Response.json({store:scoped,revision,user,...inbox,permissions:permissionsFor(store,user),dropdownPermissions:dropdownPermissionsFor(store,user),projectCapabilities:projectCapabilitiesFor(store,user),hiddenFields:Object.fromEntries(resolveModules(store).map(module=>[module.id,[...hiddenFields(store,user,module.id)]])),...details,createdRecord},{headers:{'Cache-Control':'private, no-store'}});
 }
 export function requestActor(request:Request,user:AccessUser) {
   return {id:user.userId,name:user.displayName,email:user.email,role:user.role,device:(request.headers.get('user-agent')||'Web browser').slice(0,500),ip:(request.headers.get('cf-connecting-ip')||'Unavailable').slice(0,80)};

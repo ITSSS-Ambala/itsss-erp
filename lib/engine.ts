@@ -1,3 +1,4 @@
+import { businessDate, businessDateTime, validDate, daysFromToday, dueInstant } from './business-time.ts';
 import { getDropdownConfig, moduleById, resolveModules, type ERPRecord, type Module, type Store } from './schema.ts';
 
 export type Actor = string | { id?: string; name?: string; email?: string; role?: string; [key: string]: unknown };
@@ -229,7 +230,7 @@ function reconcileStock(store: Store, moduleId: string, before: ERPRecord | unde
 }
 
 function purchaseTotal(record: ERPRecord): number { return round(n(record.quantity) * n(record.rate) * (1 + n(record.gstRate) / 100)); }
-function dateStatus(balance: number, paid: number, dueDate: string | undefined, now = new Date()) { return balance <= 0.005 ? 'Paid' : dueDate && dueDate < now.toISOString().slice(0, 10) ? 'Overdue' : paid > 0 ? 'Partially Paid' : 'Unpaid'; }
+function dateStatus(balance: number, paid: number, dueDate: string | undefined, now = new Date()) { return balance <= 0.005 ? 'Paid' : dueDate && dueDate < businessDate(now) ? 'Overdue' : paid > 0 ? 'Partially Paid' : 'Unpaid'; }
 
 export function recalculate(store: Store, now = new Date()): Store {
   for (const stock of live(store.inventory)) {
@@ -318,7 +319,7 @@ function onWorkflow(store: Store, moduleId: string, record: ERPRecord, before?: 
   }
   if (moduleId === 'projects' && record.status === 'Completed' && before?.status !== 'Completed' && enabled('Project Completed')) {
     record.completedDate ||= new Date().toISOString().slice(0, 10);
-    if (!(store.followups || []).some(r => r.automationKey === `completion:${record.id}`)) addSystemRecord(store, 'followups', { name: `Completion follow-up · ${record.name}`, project: record.id, customer: record.customer, type: 'Phone Call', assignedTo: record.salesperson || record.manager, dueAt: new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 16), priority: 'Normal', status: 'Scheduled', automationKey: `completion:${record.id}`, notes: 'Confirm handover, satisfaction and AMC requirements.' });
+    if (!(store.followups || []).some(r => r.automationKey === `completion:${record.id}`)) addSystemRecord(store, 'followups', { name: `Completion follow-up · ${record.name}`, project: record.id, customer: record.customer, type: 'Phone Call', assignedTo: record.salesperson || record.manager, dueAt: businessDateTime(new Date(Date.now() + 3 * 86400000)), priority: 'Normal', status: 'Scheduled', automationKey: `completion:${record.id}`, notes: 'Confirm handover, satisfaction and AMC requirements.' });
   }
   if (moduleId === 'tickets' && !before && enabled('Ticket Created') && !record.technician) {
     const site = get(store, 'sites', record.site);
@@ -333,7 +334,7 @@ export function applyMutation(initialStore: Store, moduleId: string, action: Act
   for (const allocation of store.allocations || []) allocation.unitCost ??= n(get(store, 'products', allocation.product)?.purchasePrice);
   const module = moduleFor(moduleId, store);
   if (!module) throw new Error(`Unknown module: ${moduleId}`);
-  if (['auditLogs', 'activities', 'stockHistory'].includes(moduleId)) throw new Error('System history is read-only.');
+  if (['auditLogs', 'activities', 'stockHistory', 'notifications'].includes(moduleId)) throw new Error('System history is read-only.');
   const safeData = Object.fromEntries(module.fields.filter(field => field.type !== 'formula' && Object.prototype.hasOwnProperty.call(data, field.key)).map(field => [field.key, data[field.key]]));
   store[moduleId] ||= [];
   const existing = id ? store[moduleId].find(r => r.id === id) : undefined;
@@ -415,32 +416,55 @@ export function applyMutation(initialStore: Store, moduleId: string, action: Act
 
 export type Alert = { id: string; name: string; message: string; type: string; moduleId: string; recordId: string; date?: string; severity: 'info' | 'warning' | 'critical'; recipient?: string; days?: number };
 export function getAlerts(store: Store, now = new Date()): Alert[] {
-  const today = now.toISOString().slice(0, 10);
-  const alerts: Alert[] = [];
-  const push = (moduleId: string, record: ERPRecord, type: string, message: string, severity: Alert['severity'], date?: string, recipient?: string) => alerts.push({ id: `${type}:${record.id}:${date || today}`, name: record.name, message, type, moduleId, recordId: record.id, date, severity, recipient, days: date ? Math.ceil((new Date(`${date.slice(0, 10)}T00:00:00Z`).getTime() - new Date(`${today}T00:00:00Z`).getTime()) / 86400000) : undefined });
-  for (const followup of active(store.followups)) if (followup.status === 'Scheduled' && String(followup.dueAt).slice(0, 10) <= today) push('followups', followup, 'Follow-up Due', `Follow-up ${String(followup.dueAt).slice(0, 10) < today ? 'overdue' : 'due today'}`, 'warning', followup.dueAt, followup.assignedTo);
+  const today = businessDate(now), alerts: Alert[] = [];
+  const push = (moduleId: string, record: ERPRecord, type: string, message: string, severity: Alert['severity'], date?: string, recipient?: string, condition = '') => {
+    alerts.push({ id: `${type}:${moduleId}:${record.id}:${date || condition}`, name: record.name || record.id, message, type, moduleId, recordId: record.id, date, severity, recipient, days: date ? daysFromToday(date, now) : undefined });
+  };
+  for (const followup of active(store.followups)) {
+    const due = dueInstant(followup.dueAt), date = validDate(followup.dueAt);
+    if (followup.status === 'Scheduled' && due !== undefined && due <= now.getTime()) push('followups', followup, 'Follow-up Due', date! < today ? 'Follow-up overdue' : 'Follow-up is due', 'warning', followup.dueAt, followup.assignedTo);
+  }
   for (const project of active(store.projects)) {
-    if (!['Completed', 'Cancelled', 'On Hold'].includes(project.status) && project.dueDate && project.dueDate <= new Date(now.getTime() + 3 * 86400000).toISOString().slice(0, 10)) push('projects', project, 'Project Deadline', project.dueDate < today ? 'Project completion is overdue' : 'Project deadline is approaching', project.dueDate < today ? 'critical' : 'warning', project.dueDate, project.manager);
-    const balance = n(project.value) - live(store.payments).filter(r => r.project === project.id && isReceived(r)).reduce((total, payment) => total + (payment.type === 'Refund' ? -1 : 1) * n(payment.amount), 0);
-    if (balance > 0 && (project.paymentDueDate || project.dueDate) < today) push('projects', project, 'Payment Overdue', `₹${round(balance).toLocaleString('en-IN')} outstanding`, 'critical', project.paymentDueDate || project.dueDate);
-    if (n(project.actualCost) > n(project.estimatedCost) && n(project.estimatedCost) > 0) push('projects', project, 'Cost Overrun', 'Actual cost exceeds the project estimate', 'warning');
+    const days = daysFromToday(project.dueDate, now);
+    if (!['Completed', 'Cancelled', 'On Hold'].includes(project.status) && days !== undefined && days <= 3) push('projects', project, 'Project Deadline', days < 0 ? 'Project completion is overdue' : days === 0 ? 'Project deadline is today' : `Project deadline in ${days} days`, days < 0 ? 'critical' : 'warning', project.dueDate, project.manager);
+    if (project.status !== 'Cancelled' && n(project.actualCost) > n(project.estimatedCost) && n(project.estimatedCost) > 0) push('projects', project, 'Cost Overrun', 'Actual cost exceeds the project estimate', 'warning', undefined, project.manager);
   }
-  for (const stock of live(store.inventory)) {
-    const product = get(store, 'products', stock.product);
-    const available = n(stock.quantity) - n(stock.reserved) - n(stock.damaged);
-    if (product && available <= n(product.minimumStock)) push('inventory', stock, 'Low Stock', `${product.name}: ${available} available at ${stock.location}`, available <= 0 ? 'critical' : 'warning');
+  for (const balance of getReceivables(store, now)) {
+    const sourceModule = balance.project ? 'projects' : 'receivables', record = get(store, sourceModule, balance.id);
+    const days = daysFromToday(balance.dueDate, now);
+    if (!record || record.archivedAt || days === undefined || days > 0) continue;
+    const overdue = days < 0;
+    push(sourceModule, record, overdue ? 'Payment Overdue' : 'Payment Due', `₹${round(balance.balance).toLocaleString('en-IN')} outstanding${overdue ? ' past the payment due date' : ' and due today'}`, overdue ? 'critical' : 'warning', balance.dueDate, record.assignedTo, String(round(balance.balance)));
+    alerts[alerts.length - 1].id += `:${round(balance.balance)}`;
   }
-  for (const [moduleId, dateKey, type] of [['amc', 'endDate', 'AMC Renewal'], ['licenses', 'expiryDate', 'License Renewal'], ['domains', 'expiryDate', 'Domain Renewal'], ['hosting', 'expiryDate', 'Hosting Renewal'], ['hosting', 'sslExpiry', 'SSL Expiry'], ['warranties', 'endDate', 'Warranty Expiry']] as string[][]) for (const contract of live(store[moduleId])) {
-    if (['Cancelled', 'Renewed'].includes(contract.status) || !contract[dateKey]) continue;
-    const days = Math.ceil((new Date(`${String(contract[dateKey]).slice(0, 10)}T00:00:00Z`).getTime() - new Date(`${today}T00:00:00Z`).getTime()) / 86400000);
-    if (days <= 30) {
-      push(moduleId, contract, type, days < 0 ? `Expired ${Math.abs(days)} days ago` : `Renewal due in ${days} day${days === 1 ? '' : 's'}`, days <= 7 ? 'critical' : 'warning', contract[dateKey], contract.assignedTo || contract.technician);
-      const stage = days < 0 ? 'expired' : days <= 1 ? '1-day' : days <= 7 ? '7-days' : days <= 15 ? '15-days' : '30-days';
-      alerts[alerts.length - 1].id += `:${stage}`;
+  for (const stock of active(store.inventory)) {
+    const product = get(store, 'products', stock.product), threshold = product?.minimumStock;
+    if (!product || product.archivedAt || product.status === 'Inactive' || threshold === undefined || threshold === '' || !Number.isFinite(Number(threshold)) || Number(threshold) < 0) continue;
+    const available = round(n(stock.quantity) - n(stock.reserved) - n(stock.damaged));
+    if (available <= Number(threshold)) push('inventory', stock, 'Low Stock', `${product.name}: ${available} available at ${stock.location || 'this location'} (minimum ${Number(threshold)})`, available <= 0 ? 'critical' : 'warning', undefined, undefined, `${available}:${threshold}`);
+  }
+  for (const [moduleId, dateKey, type] of [['amc', 'endDate', 'AMC Renewal'], ['licenses', 'expiryDate', 'License Renewal'], ['domains', 'expiryDate', 'Domain Renewal'], ['hosting', 'expiryDate', 'Hosting Renewal'], ['hosting', 'sslExpiry', 'SSL Expiry'], ['warranties', 'endDate', 'Warranty Expiry']] as string[][]) for (const contract of active(store[moduleId])) {
+    if (['Cancelled', 'Renewed', 'Inactive'].includes(contract.status)) continue;
+    const days = daysFromToday(contract[dateKey], now);
+    if (days !== undefined && days <= 30) {
+      const wording = type.includes('Expiry') ? 'Coverage expires' : 'Renewal due';
+      push(moduleId, contract, type, days < 0 ? `Expired ${Math.abs(days)} days ago` : days === 0 ? `${wording} today` : `${wording} in ${days} day${days === 1 ? '' : 's'}`, days <= 7 ? 'critical' : 'warning', contract[dateKey], contract.assignedTo || contract.technician);
+      alerts[alerts.length - 1].id += `:${days < 0 ? 'expired' : days <= 1 ? '1-day' : days <= 7 ? '7-days' : days <= 15 ? '15-days' : '30-days'}`;
     }
   }
-  for (const ticket of active(store.tickets)) if (!['Closed', 'Resolved'].includes(ticket.status) && ticket.dueDate && ticket.dueDate < today) push('tickets', ticket, 'Ticket Overdue', 'Support resolution is overdue', 'critical', ticket.dueDate, ticket.technician);
-  return alerts.sort((a, b) => (a.severity === 'critical' ? 0 : 1) - (b.severity === 'critical' ? 0 : 1) || String(a.date).localeCompare(String(b.date)));
+  for (const ticket of active(store.tickets)) {
+    const days = daysFromToday(ticket.dueDate, now);
+    if (!['Closed', 'Resolved', 'Cancelled'].includes(ticket.status) && days !== undefined && days < 0) push('tickets', ticket, 'Ticket Overdue', 'Support resolution is overdue', 'critical', ticket.dueDate, ticket.technician);
+  }
+  for (const task of active(store.tasks)) {
+    const days = daysFromToday(task.dueDate, now);
+    if (!['Completed', 'Cancelled'].includes(task.status) && days !== undefined && days <= 0) push('tasks', task, 'Task Due', days < 0 ? 'Task is overdue' : 'Task is due today', days < 0 ? 'critical' : 'warning', task.dueDate, task.assignedTo);
+  }
+  for (const [moduleId, dateKey] of [['surveys', 'surveyDate'], ['workOrders', 'scheduledAt'], ['technicianJobs', 'scheduledAt'], ['events', 'startAt']]) for (const visit of active(store[moduleId])) {
+    const date = validDate(visit[dateKey]);
+    if (date === today && ['Scheduled', 'Assigned'].includes(visit.status)) push(moduleId, visit, moduleId === 'events' ? 'Calendar Event' : 'Site Visit', moduleId === 'events' ? 'Calendar event scheduled today' : 'Site visit scheduled today', 'info', visit[dateKey], visit.assignedTo || visit.technician);
+  }
+  return alerts.sort((a, b) => (a.severity === 'critical' ? 0 : 1) - (b.severity === 'critical' ? 0 : 1) || String(a.date || '').localeCompare(String(b.date || '')));
 }
 
 export function runAutomations(initialStore: Store, now = new Date()): { store: Store; created: number } {
@@ -450,7 +474,7 @@ export function runAutomations(initialStore: Store, now = new Date()): { store: 
     const trigger = ({ 'AMC Renewal': 'AMC Expiring', 'License Renewal': 'License Expiring', 'Low Stock': 'Low Stock', 'Payment Overdue': 'Payment Overdue', 'Project Deadline': 'Project Due' } as Record<string, string>)[alert.type];
     const rule = live(store.automations).find(r => r.trigger === trigger);
     if (rule?.enabled === false || (rule?.daysBefore !== undefined && alert.days !== undefined && alert.days > n(rule.daysBefore))) continue;
-    if (!(store.notifications || []).some(r => r.automationKey === alert.id)) { addSystemRecord(store, 'notifications', { name: alert.name, message: alert.message, type: alert.type, sourceModule: alert.moduleId, sourceId: alert.recordId, recipient: alert.recipient, channel: 'In-App', date: now.toISOString().slice(0, 10), read: false, status: 'Delivered', automationKey: alert.id }); created++; }
+    if ((store[alert.moduleId] || []).find(row => row.id === alert.recordId)?.demo === true) continue;
     if (alert.type === 'AMC Renewal' && n(alert.days) >= 0 && n(alert.days) <= 30 && !live(store.automations).some(r => r.trigger === 'AMC Expiring' && r.enabled === false)) {
       const contract = get(store, 'amc', alert.recordId)!;
       const customer = get(store, 'customers', contract.customer);
@@ -462,7 +486,7 @@ export function runAutomations(initialStore: Store, now = new Date()): { store: 
 }
 
 export function getReceivables(store: Store, now = new Date()): ERPRecord[] {
-  const today = now.toISOString().slice(0, 10);
+  const today = businessDate(now);
   const balances = live(store.projects).filter(r => r.status !== 'Cancelled').map(project => {
     const paid = live(store.payments).filter(r => r.project === project.id && isReceived(r)).reduce((total, payment) => total + (payment.type === 'Refund' ? -1 : 1) * n(payment.amount), 0);
     return { id: project.id, name: project.name, customer: project.customer, project: project.id, amount: n(project.value), paid, balance: round(Math.max(0, n(project.value) - paid)), dueDate: project.paymentDueDate || project.dueDate };

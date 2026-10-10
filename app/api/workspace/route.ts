@@ -1,18 +1,17 @@
 import { env } from '../../../lib/runtime';
-import { loadWorkspace, saveWorkspace, apiError, checkOrigin, workspaceResponse, requestActor } from '../../../lib/server';
+import { loadWorkspace, loadNotificationWorkspace, saveWorkspace, apiError, checkOrigin, workspaceResponse, requestActor } from '../../../lib/server';
 import { applyMutation, runAutomations, type Action } from '../../../lib/engine';
 import { assertMutationAccess, resolveRole, canDownloadFile } from '../../../lib/access';
 import { resolveModules, type ERPRecord, type Store } from '../../../lib/schema';
 import { createDropdownOption } from '../../../lib/dropdowns';
 import { mutateProjectPost, updateProjectProgress, validateProjectMediaReferences } from '../../../lib/project-posts';
 import { validateLogoMetadata, validateMediaUpload } from '../../../lib/media';
+import { synchronizeNotifications } from '../../../lib/notifications';
 
 export async function GET() {
   try {
-    const loaded=await loadWorkspace();
-    const automated=runAutomations(loaded.store);
-    const revision=automated.created?await saveWorkspace(automated.store,loaded.revision):loaded.revision;
-    return workspaceResponse(automated.created?automated.store:loaded.store,revision,loaded.user);
+    const loaded=await loadNotificationWorkspace();
+    return workspaceResponse(loaded.store,loaded.revision,loaded.user);
   } catch(error) { return apiError(error); }
 }
 export async function POST(request:Request) {
@@ -30,7 +29,7 @@ export async function POST(request:Request) {
       if(moduleId!=='projects'||!body.id)throw new Error('Choose a project to update.');
       if(!body.data||typeof body.data!=='object'||Array.isArray(body.data))throw new Error('Provide project progress or a stage.');
       const result=updateProjectProgress(store,user,body.id,body.data as Partial<ERPRecord>,actor);
-      const next=runAutomations(result.store).store;
+      const next=synchronizeNotifications(runAutomations(result.store).store,new Date(),store,user.memberId).store;
       const nextRevision=await saveWorkspace(next,revision);
       return workspaceResponse(next,nextRevision,user);
     }
@@ -97,7 +96,7 @@ export async function POST(request:Request) {
       const id=moduleId==='settings'?store.settings?.[0]?.id:body.id;
       await change(prepare(body.data||{}),action as Action,id);
     }
-    next=runAutomations(next).store;
+    next=synchronizeNotifications(runAutomations(next).store,new Date(),store,user.memberId).store;
     const nextRevision=await saveWorkspace(next,revision);
     return workspaceResponse(next,nextRevision,user,{createdRecordId,createdRecordModule:moduleId});
   } catch(error) { return apiError(error); }

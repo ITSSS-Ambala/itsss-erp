@@ -13,17 +13,15 @@ The requested production address is **https://crm.itsss.co.in**. See
 [the Hostinger deployment guide](docs/HOSTINGER_DEPLOYMENT.md) for the exact
 upload flow, runtime settings, persistent data directory and first login.
 
-## Build and upload
+## Build and deploy from GitHub
 
 ```sh
 npm run install:ci
 npm run build
-npm run package:hostinger
 ```
 
-Upload **`outputs/hostinger-crm-upload.zip`** through Hostinger's **Node.js Web
-App** flow. Its root includes `package.json`, a matching lockfile and application
-sources. Hostinger builds it on Linux; no Windows dependency binaries are packed.
+Push updated application sources to **`ITSSS-Ambala/itsss-erp`**, branch **`main`**,
+which is connected to Hostinger. A ZIP upload is unnecessary for this deployment.
 
 Build settings: **Next.js, Node.js 24, `npm run build`, output `.next`, start
 `npm start`**. Hostinger injects `PORT`; the server listens on `0.0.0.0`.
@@ -86,6 +84,28 @@ managed login passwords; restoring a JSON backup leaves current passwords intact
 Rotating a configured environment password hash overrides its managed password
 for account recovery. This runtime targets one server/persistent disk, not replicas
 with independent local storage.
+
+## Notifications
+
+The bell and Notifications module use the same personal, server-generated inbox.
+Alerts use complete business records before applying the recipient's record and
+field permissions. Paid balances, completed work, invalid dates, archived sources
+and demo records do not create active reminders. Legacy sample notifications are
+excluded. Due dates use Asia/Kolkata; timed follow-ups wait until their due time.
+
+Assignment and record events are saved when a change succeeds. Active assigned
+staff, project/site teams, authorized supervisors and the relevant department
+receive updates within their access. Clients receive permitted updates for their
+own customer records. The actor does not receive their own event notification.
+Technician users need an Employee mapping and client users a Customer mapping.
+
+Open sessions refresh the inbox every 15 seconds and on focus or opening the bell.
+Unread counts include the entire inbox. Individual and bulk read status persists
+per user in SQLite across devices and server restarts; reading never changes a
+business record. Resolved reminders leave the active inbox and recurring issues
+get a new unread alert. Saved events remain available when a user next signs in.
+Due reminders are evaluated during authenticated requests; email, WhatsApp, push
+and unattended scheduling require separate integrations.
 
 ## Verification
 

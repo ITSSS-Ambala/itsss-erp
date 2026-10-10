@@ -5,7 +5,7 @@ import { validateLogoMetadata } from './media.ts';
 export type AccessUser = { userId: string; displayName: string; email?: string; memberId?: string; role: string; employee?: string; customer?: string };
 const live = (rows: ERPRecord[] = []) => rows.filter(row => !row.deletedAt && !row.archivedAt && row.status !== 'Inactive');
 const configured = (value: unknown): string[] => Array.isArray(value) ? value.map(String) : String(value || '').split(/[\n,]/).map(item => item.trim()).filter(Boolean);
-export const historyModules = new Set(['auditLogs', 'activities', 'stockHistory']);
+export const historyModules = new Set(['auditLogs', 'activities', 'stockHistory', 'notifications']);
 const adminModules = new Set(['users', 'roles', 'customFields', 'customModules', 'customStatuses', 'customForms', 'dropdownOptions', 'categories', 'taxes', 'templates', 'automations', 'vault', 'backups']);
 const restrictedRoles = new Set(['Technician', 'Developer', 'Marketing', 'Sales', 'Client']);
 const financialFields = new Set(['purchasePrice', 'unitCost', 'salary', 'cost', 'actualCost', 'estimatedCost', 'profit', 'margin', 'materialCost', 'expectedProfit', 'costVariance', 'creditLimit', 'licenseKey', 'credential', 'commission', 'totalCost', 'lifetimeProfit', 'netSalary']);
@@ -41,6 +41,7 @@ export function permit(roleValue: string, moduleId: string, actionValue: string,
   if (!['view', 'add', 'edit', 'delete', 'export', 'approve', 'assign', 'download', 'share'].includes(action)) return false;
   if (!moduleById[moduleId] && !live(store.customModules).some(module => module.moduleId === moduleId)) return false;
   if (historyModules.has(moduleId) && !['view', 'export', 'download'].includes(action)) return false;
+  if (moduleId === 'notifications') return role !== 'Unassigned' && ['view', 'export', 'download'].includes(action);
   if (['Super Admin', 'Admin'].includes(role)) return true;
   if (role === 'Unassigned') return false;
   if (moduleId === 'projectPosts') {
@@ -89,6 +90,10 @@ function technicianScope(store: Store, employee: string) {
 
 export function canViewRecord(store: Store, user: AccessUser, moduleId: string, row: ERPRecord, depth = 0): boolean {
   if (depth > 4 || !permit(user.role, moduleId, 'view', store)) return false;
+  if (moduleId === 'notifications') {
+    if (row.deliveryVersion !== 1 || !user.memberId || row.recipientUserId !== user.memberId || row.channel !== 'In-App') return false;
+    return notificationSourceVisible(store, user, row.sourceModule, row.sourceId, row.type);
+  }
   if (['Super Admin', 'Admin'].includes(user.role)) return true;
   if (moduleId === 'settings') return true;
   if (moduleId === 'projectPosts') {
@@ -132,6 +137,35 @@ export function canViewRecord(store: Store, user: AccessUser, moduleId: string, 
     if (['documents', 'notes', 'savedViews'].includes(moduleId)) return row.createdById === user.userId || scope.assigned(row) || scope.customers.has(row.customer) || scope.sites.has(row.site) || scope.projects.has(row.project);
     return false;
   }
+  return true;
+}
+
+export function notificationSourceVisible(store: Store, user: AccessUser, moduleId: string, recordId: string, type: string): boolean {
+  if (moduleId === 'notifications') return false;
+  const source = (store[moduleId] || []).find(row => row.id === recordId && !row.deletedAt && !row.archivedAt);
+  if (!source || source.demo === true || !canViewRecord(store, user, moduleId, source)) return false;
+  const hidden = hiddenFields(store, user, moduleId);
+  if (hidden.has('name')) return false;
+  const fields: Record<string, string[]> = {
+    'Payment Due': ['value', 'amount', 'balance', 'paid', 'paidAmount', 'balanceDue', 'paymentDueDate', 'dueDate'],
+    'Payment Overdue': ['value', 'amount', 'balance', 'paid', 'paidAmount', 'balanceDue', 'paymentDueDate', 'dueDate'],
+    'Cost Overrun': ['actualCost', 'estimatedCost'],
+    'Low Stock': ['quantity', 'reserved', 'damaged', 'location'],
+    'Follow-up Due': ['dueAt'], 'Project Deadline': ['dueDate'], 'Ticket Overdue': ['dueDate'],
+    'Task Due': ['dueDate'], 'Site Visit': ['scheduledAt', 'surveyDate'], 'Calendar Event': ['startAt'],
+    'AMC Renewal': ['endDate'], 'License Renewal': ['expiryDate'], 'Domain Renewal': ['expiryDate'],
+    'Hosting Renewal': ['expiryDate'], 'SSL Expiry': ['sslExpiry'], 'Warranty Expiry': ['endDate'],
+  };
+  if ((fields[type] || []).some(field => hidden.has(field))) return false;
+  if (/^Payment (Due|Overdue)$/.test(type) && !permit(user.role, 'payments', 'view', store)) return false;
+  if (type === 'Cost Overrun' && !permit(user.role, 'expenses', 'view', store)) return false;
+  if (type === 'Low Stock') {
+    const product = (store.products || []).find(row => row.id === source.product && !row.deletedAt && !row.archivedAt && row.status !== 'Inactive');
+    const productMasks = hiddenFields(store, user, 'products');
+    if (!product || !canViewRecord(store, user, 'products', product) || productMasks.has('minimumStock') || productMasks.has('name')) return false;
+  }
+  if (['New Lead', 'New Ticket', 'Lead Assigned', 'Task Assignment', 'Project Update', 'Record Update'].includes(type) && hidden.has('status')) return false;
+  if (moduleId === 'projectPosts' && hidden.has('authorName')) return false;
   return true;
 }
 
