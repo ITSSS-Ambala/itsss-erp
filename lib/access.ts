@@ -35,6 +35,11 @@ export function resolveRole(role: unknown, store: Store): string {
 }
 
 export function permit(roleValue: string, moduleId: string, actionValue: string, store: Store): boolean {
+  if (moduleId === 'leads' && ['view','export','download'].includes(actionValue) && directPermit(roleValue,'customers',actionValue,store)) return true;
+  return directPermit(roleValue,moduleId,actionValue,store);
+}
+
+function directPermit(roleValue: string, moduleId: string, actionValue: string, store: Store): boolean {
   const role = resolveRole(roleValue, store);
   const aliases: Record<string, string> = { create: 'add', update: 'edit', duplicate: 'add', import: 'add', restore: 'delete', archive: 'edit', permanentDelete: 'delete' };
   const action = aliases[actionValue] || actionValue.toLowerCase();
@@ -96,6 +101,10 @@ export function canViewRecord(store: Store, user: AccessUser, moduleId: string, 
   }
   if (['Super Admin', 'Admin'].includes(user.role)) return true;
   if (moduleId === 'settings') return true;
+  if (moduleId === 'leads' && !directPermit(user.role,'leads','view',store)) {
+    const company = (store.customers || []).find(company => company.id === row.customer && !company.deletedAt && !company.archivedAt);
+    return Boolean(company && canViewRecord(store,user,'customers',company,depth+1));
+  }
   if (moduleId === 'projectPosts') {
     if (row.deletedAt && row.authorId !== user.userId) return false;
     let parentId = row.parent;
@@ -129,6 +138,7 @@ export function canViewRecord(store: Store, user: AccessUser, moduleId: string, 
     if (moduleId === 'employees') return row.id === user.employee;
     if (['products', 'services'].includes(moduleId)) return true;
     if (moduleId === 'customers') return scope.customers.has(row.id);
+    if (moduleId === 'leads') return scope.customers.has(row.customer);
     if (moduleId === 'contacts') return scope.customers.has(row.customer) || scope.sites.has(row.site);
     if (moduleId === 'sites') return scope.sites.has(row.id);
     if (moduleId === 'projects') return scope.projects.has(row.id);
@@ -171,6 +181,15 @@ export function notificationSourceVisible(store: Store, user: AccessUser, module
 
 export function hiddenFields(store: Store, user: AccessUser, moduleId: string): Set<string> {
   const fields = new Set<string>();
+  if (moduleId === 'leads' && !directPermit(user.role,'leads','view',store)) {
+    for (const key of ['budget','source','status','type','assignedTo','priority','expectedClosing','lastContact','nextFollowup','product','service','requirement','project','notes','attachments']) fields.add(key);
+  }
+  if (moduleId === 'leads') {
+    const companyMasks = hiddenFields(store,user,'customers');
+    for (const key of companyMasks) fields.add(key === 'contactPersons' ? 'contactPerson' : key);
+    if (companyMasks.has('contactPersons')) fields.add('additionalContacts');
+    if(companyMasks.has('company')) fields.add('name');
+  }
   if (restrictedRoles.has(user.role)) for (const key of financialFields) fields.add(key);
   if (['Technician', 'Developer', 'Marketing'].includes(user.role)) for (const key of ['value', 'paidAmount', 'balanceDue', 'paymentStatus', 'totalRevenue']) fields.add(key);
   const role = live(store.roles).find(row => row.name === user.role || row.id === user.role);
@@ -179,6 +198,7 @@ export function hiddenFields(store: Store, user: AccessUser, moduleId: string): 
     if (dot < 0) fields.add(token);
     else if (token.slice(0, dot) === moduleId || token.slice(0, dot) === '*') fields.add(token.slice(dot + 1));
   }
+  if (['leads','customers'].includes(moduleId) && (fields.has('name') || fields.has('company'))) { fields.add('name'); fields.add('company'); }
   return fields;
 }
 
@@ -219,7 +239,7 @@ export function visibleStore(store: Store, user: AccessUser): Store {
       const safe = { ...row };
       for (const key of hidden) delete safe[key];
       if (!['Super Admin', 'Admin'].includes(user.role)) for (const key of ['ip', 'device', 'oldValue', 'newValue', 'actorId', 'lastLogin']) delete safe[key];
-      if (moduleId === 'settings' && !['Super Admin', 'Admin'].includes(user.role)) return Object.fromEntries(Object.entries(safe).filter(([key]) => ['id', 'name', 'fullName', 'logo', 'brandColor', 'currency', 'demo', 'passwordMinLength'].includes(key))) as ERPRecord;
+      if (moduleId === 'settings' && !['Super Admin', 'Admin'].includes(user.role)) return Object.fromEntries(Object.entries(safe).filter(([key]) => ['id', 'name', 'fullName', 'logo', 'brandColor', 'currency', 'demo', 'passwordMinLength','announcementText','announcementEnabled','announcementAnimated'].includes(key))) as ERPRecord;
       return safe;
     });
   }

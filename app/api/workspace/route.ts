@@ -7,6 +7,7 @@ import { createDropdownOption } from '../../../lib/dropdowns';
 import { mutateProjectPost, updateProjectProgress, validateProjectMediaReferences } from '../../../lib/project-posts';
 import { validateLogoMetadata, validateMediaUpload } from '../../../lib/media';
 import { synchronizeNotifications } from '../../../lib/notifications';
+import { parseBulkAction } from '../../../lib/bulk-actions';
 
 export async function GET() {
   try {
@@ -21,7 +22,7 @@ export async function POST(request:Request) {
     const body=await request.json() as {revision?:number;module?:string;action?:string;id?:string;field?:string;data?:unknown};
     if(body.revision!==revision)throw new Error('CONFLICT: Another update arrived. Refresh and try again.');
     const moduleId=String(body.module||''),action=String(body.action||'');
-    if(!['create','update','delete','restore','duplicate','archive','permanentDelete','import','createOption','updateProjectProgress'].includes(action))throw new Error('Unsupported action.');
+    if(!['create','update','delete','restore','duplicate','archive','permanentDelete','import','bulk','createOption','updateProjectProgress'].includes(action))throw new Error('Unsupported action.');
     const module=resolveModules(store).find(item=>item.id===moduleId);
     if(!module)throw new Error('Unknown module.');
     const actor=requestActor(request,user);
@@ -89,7 +90,10 @@ export async function POST(request:Request) {
       if(operation==='create'||operation==='duplicate'){result.record.createdById=user.userId;createdRecordId=result.record.id;}
       next=result.store;
     };
-    if(action==='import') {
+    if(action==='bulk') {
+      const bulk=parseBulkAction(body.data,module);
+      for(const id of bulk.ids) await change(prepare(bulk.data),bulk.operation,id);
+    } else if(action==='import') {
       if(!Array.isArray(body.data)||!body.data.length||body.data.length>500)throw new Error('Import between 1 and 500 rows at once.');
       for(const raw of body.data)await change(prepare(raw),'create');
     } else {

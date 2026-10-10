@@ -12,7 +12,7 @@
     "postbuild": "node scripts/prepare-hostinger.mjs",
     "start": "node scripts/start-hostinger.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/engine.test.ts tests/permissions.test.ts tests/vault.test.ts tests/dropdowns.test.ts tests/media.test.ts tests/project-posts.test.ts tests/hostinger.test.ts tests/user-passwords.test.ts tests/notifications.test.ts tests/notification-reads.test.ts",
+    "test": "node --experimental-strip-types --test tests/engine.test.ts tests/permissions.test.ts tests/vault.test.ts tests/dropdowns.test.ts tests/media.test.ts tests/project-posts.test.ts tests/hostinger.test.ts tests/user-passwords.test.ts tests/notifications.test.ts tests/notification-reads.test.ts tests/lead-profiles.test.ts",
     "auth:hash": "node scripts/hash-password.mjs",
     "vault:key": "node scripts/generate-vault-key.mjs",
     "verify:hostinger": "node scripts/verify-hostinger.mjs",

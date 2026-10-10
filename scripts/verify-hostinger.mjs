@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { resolve, relative } from 'node:path';
@@ -157,6 +157,62 @@ try {
   assert.equal(updatedInbox.unreadCount, 1, 'a subsequent genuine status change creates a new unread event');
   const savedReadIds = updatedInbox.notifications.filter(row => row.read).map(row => row.id).sort();
   record('personal notification delivery, all 42 items, saved reads, CSRF, recipient isolation and resolved reminders');
+  const update=async(module,action,data={},id)=>{
+    workspace=await (await request('/api/workspace',{method:'POST',headers,body:JSON.stringify({revision:workspace.revision,module,action,data,id})})).json();return workspace;
+  };
+  assert.ok(workspace.store.leads.some(row=>row.customer===created.createdRecordId),'legacy billing companies have visible Lead profiles without changing IDs');
+  const companyIds=[];
+  for(let i=1;i<=3;i++){
+    await update('leads','create',{name:`Bulk verification company ${i}`,contactPerson:`Contact ${i}`,contactDesignation:'Director',mobile:'9876543210',website:'https://company.example',address:'Ambala company address',status:'New'});
+    companyIds.push(workspace.createdRecordId);assert.ok(workspace.createdRecord.customer);
+  }
+  const bulkRevision=workspace.revision;
+  await request('/api/workspace',{method:'POST',headers,body:JSON.stringify({revision:bulkRevision,module:'leads',action:'bulk',data:{ids:[companyIds[0],'missing-record'],operation:'delete'}})},400);
+  workspace=await (await request('/api/workspace',{headers})).json();
+  assert.equal(workspace.revision,bulkRevision);assert.ok(!workspace.store.leads.find(row=>row.id===companyIds[0]).deletedAt,'failed bulk action saves no partial changes');
+  await request('/api/workspace',{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({revision:workspace.revision,module:'leads',action:'bulk',data:{ids:companyIds,operation:'delete'}})},403);
+  await request('/api/workspace',{method:'POST',headers:{...headers,Cookie:staffCookie},body:JSON.stringify({revision:workspace.revision,module:'leads',action:'bulk',data:{ids:companyIds,operation:'delete'}})},403);
+  await update('leads','bulk',{ids:companyIds,operation:'update',data:{status:'Negotiation'}});
+  assert.ok(companyIds.every(id=>workspace.store.leads.find(row=>row.id===id).status==='Negotiation'));
+  await update('leads','bulk',{ids:companyIds.slice(0,2),operation:'delete'});
+  assert.ok(companyIds.slice(0,2).every(id=>workspace.store.leads.find(row=>row.id===id).deletedAt));
+  for(const id of companyIds.slice(0,2))await update('leads','restore',{},id);
+  await update('leads','bulk',{ids:companyIds.slice(0,2),operation:'archive'});
+  assert.ok(companyIds.slice(0,2).every(id=>workspace.store.leads.find(row=>row.id===id).archivedAt));
+  for(const id of companyIds.slice(0,2))await update('leads','restore',{},id);
+  record('atomic bulk status, archive, recoverable delete, restoration, CSRF and role checks');
+  const imageBytes=await readFile(resolve('public/itsss-logo.png'));
+  const projectFiles=[];
+  for(const [name,bytes,type] of [['project-contract.txt',Buffer.from('Project creation attachment'),'text/plain'],['project-photo.png',imageBytes,'image/png']]){
+    const form=new FormData();form.set('module','projects');form.set('file',new Blob([bytes],{type}),name);
+    projectFiles.push(await (await request('/api/files',{method:'POST',headers:{Cookie:cookie,Origin:origin},body:form})).json());
+  }
+  const companyLead=workspace.store.leads.find(row=>row.id===companyIds[2]);
+  await update('projects','create',{name:'Project attachment verification',customer:companyLead.customer,value:1000,status:'Planning',attachments:projectFiles});
+  const attachmentProjectId=workspace.createdRecordId;
+  assert.equal(workspace.createdRecord.lead,companyLead.id);assert.equal(workspace.createdRecord.attachments.length,2);
+  workspace=await (await request('/api/workspace',{headers})).json();
+  assert.equal(workspace.store.projects.find(row=>row.id===attachmentProjectId).attachments.length,2);
+  assert.deepEqual(Buffer.from(await (await request(projectFiles[1].url+'&inline=1',{headers:{Cookie:cookie}})).arrayBuffer()),imageBytes);
+  await request(projectFiles[1].url,{headers:technicianHeaders},403);
+  await update('leads','delete',{},companyLead.id);
+  await update('projects','update',{notes:'Delivery continues with historical lead reference'},attachmentProjectId);
+  assert.equal(workspace.store.projects.find(row=>row.id===attachmentProjectId).lead,companyLead.id);
+  await update('leads','restore',{},companyLead.id);
+  record('project creation files and images persist on reload, preview correctly and enforce project access');
+  await update('roles','create',{name:'Company profile mask verification',allowedModules:'customers,leads',permissions:['View','Download'],hiddenFields:'customers.name,customers.mobile',status:'Active'});
+  const maskRole=workspace.createdRecordId,viewerMember=workspace.store.users.find(row=>row.email===staffEmail);
+  await update('users','update',{role:maskRole},viewerMember.id);
+  const maskedWorkspace=await (await request('/api/workspace',{headers:{Cookie:staffCookie}})).json();
+  assert.ok(maskedWorkspace.store.leads.length>0);assert.ok(maskedWorkspace.store.leads.every(row=>row.name===undefined&&row.company===undefined&&row.mobile===undefined));
+  await update('users','update',{role:viewerRole.id},viewerMember.id);
+  record('unified company profiles preserve custom field masks and project edits after lead deletion');
+  await update('settings','update',{announcementText:'Verified team announcement',announcementEnabled:true,announcementAnimated:false});
+  const sharedSettings=(await (await request('/api/workspace',{headers:{Cookie:staffCookie}})).json()).store.settings[0];
+  assert.equal(sharedSettings.announcementText,'Verified team announcement');assert.equal(sharedSettings.announcementAnimated,false);
+  await update('settings','update',{announcementText:'',announcementEnabled:false});
+  assert.equal((await (await request('/api/workspace',{headers})).json()).store.settings[0].announcementEnabled,false);
+  record('shared announcement editing, animation control and persistent removal');
   const bytes = Buffer.from('Private upload: production verification.');
   const form = new FormData(); form.set('module', 'documents'); form.set('file', new Blob([bytes], { type: 'text/plain' }), 'verification.txt');
   const uploaded = await (await request('/api/files', { method: 'POST', headers: { Cookie: cookie, Origin: origin }, body: form })).json();
@@ -175,6 +231,9 @@ try {
   await stop(); await start();
   const reloaded = await (await request('/api/workspace', { headers: { Cookie: cookie } })).json();
   assert.ok(reloaded.store.customers.some(row => row.id === created.createdRecordId));
+  assert.equal(reloaded.store.projects.find(row=>row.id===attachmentProjectId).attachments.length,2);
+  assert.ok(reloaded.store.leads.some(row=>row.id===companyLead.id&&row.customer===companyLead.customer));
+  assert.equal(reloaded.store.settings[0].announcementEnabled,false);
   assert.deepEqual(Buffer.from(await (await request(uploaded.url, { headers: { Cookie: cookie } })).arrayBuffer()), bytes);
   await request('/api/workspace', { headers: { Cookie: managedCookie } });
   await request('/api/auth/login', { method: 'POST', headers, body: JSON.stringify({ email: managedEmail, password: replacementPassword }) });

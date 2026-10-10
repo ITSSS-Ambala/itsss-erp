@@ -8,6 +8,7 @@ import { resolveRole, permit, visibleStore, hiddenFields, dropdownPermissionsFor
 import { runAutomations, recalculate } from './engine';
 import { synchronizeNotifications, inboxNotifications } from './notifications';
 import { notificationReadDates } from './hostinger/notification-reads';
+import { migrateLeadProfiles } from './lead-profiles';
 export { permit, visibleStore } from './access';
 export type { Store } from './schema';
 export async function identity() {
@@ -33,6 +34,7 @@ export async function loadWorkspace() {
   if (!row) throw new Error('Unable to initialize workspace.');
   const store: Store = await openVault(JSON.parse(row.data),env.ERP_VAULT_KEY||'');
   let migrated=false;
+  migrated=migrateLeadProfiles(store);
   for(const member of store.users||[]) {
     const legacy=(store.roles||[]).find(role=>!role.deletedAt&&role.status!=='Inactive'&&role.name===member.role);
     if(legacy&&legacy.id!==member.role){member.role=legacy.id;migrated=true;}

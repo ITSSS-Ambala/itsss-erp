@@ -30,6 +30,26 @@ If deploying from GitHub, publish all updated source files to the repository and
 branch selected in Hostinger; generating a local ZIP does not update GitHub.
 An old deployment that logs `scripts/run-framework.mjs` is still building Vinext.
 
+## Leads, list actions and project files
+
+**Leads** is the company directory. Enter the company name, contact person,
+phone, email, website and addresses in one profile. Existing customer records
+appear here automatically; their billing IDs, project links and client access
+remain intact. Projects and payment forms use **Lead / company** selectors.
+
+Select list rows to reveal **Actions**: delete to the recycle bin, archive,
+change status, assign an employee or export, according to your role. The header
+checkbox selects the current page; **Select all matching** includes other pages
+(up to 500 records). Bulk changes save together or fail without partial changes.
+
+Files uploaded during project creation appear under **Project files** in the
+Progress view and **Attachments** tab. Image previews and downloads retain the
+project's access restrictions. Use **Edit record** to add or remove attachments.
+
+Administrators can edit the announcement with the top bar pencil or through
+**Settings → Edit announcement**. They can change the text, stop its animation,
+hide it temporarily or remove it. Settings can restore a removed announcement.
+
 This app needs a Node.js-capable hosting plan. Extracting files into a PHP/static
 `public_html` directory cannot run its server APIs. The older
 `itsss-production-build.zip` is a historical Cloudflare artifact, not the

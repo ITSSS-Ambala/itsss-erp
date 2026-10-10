@@ -1,5 +1,6 @@
 import { businessDate, businessDateTime, validDate, daysFromToday, dueInstant } from './business-time.ts';
 import { getDropdownConfig, moduleById, resolveModules, type ERPRecord, type Module, type Store } from './schema.ts';
+import { syncLeadCompany, linkProjectCompany, companyFields, migrateLeadProfiles } from './lead-profiles.ts';
 
 export type Actor = string | { id?: string; name?: string; email?: string; role?: string; [key: string]: unknown };
 export type Action = 'create' | 'update' | 'delete' | 'restore' | 'duplicate' | 'archive' | 'permanentDelete';
@@ -42,10 +43,14 @@ export function evaluateFormula(expression: string, record: Partial<ERPRecord>):
   return round(result);
 }
 
-export function validateRecord(moduleId: string, data: Partial<ERPRecord>, store: Store): string[] {
+export function validateRecord(moduleId: string, data: Partial<ERPRecord>, store: Store, before?: ERPRecord): string[] {
   const module = moduleFor(moduleId, store);
   if (!module) return [`Unknown module: ${moduleId}`];
   const errors: string[] = [];
+  if (moduleId === 'settings') {
+    if (data.announcementText !== undefined && (typeof data.announcementText !== 'string' || data.announcementText.length > 500)) errors.push('Announcement must contain at most 500 characters.');
+    for (const key of ['announcementEnabled','announcementAnimated']) if (data[key] !== undefined && typeof data[key] !== 'boolean') errors.push('Announcement options must be true or false.');
+  }
   for (const field of module.fields) {
     const value = data[field.key];
     if (field.type === 'formula') continue;
@@ -76,7 +81,8 @@ export function validateRecord(moduleId: string, data: Partial<ERPRecord>, store
       const values = Array.isArray(value) ? value : [value];
       for (const relationId of values) if (!get(store, field.relation, String(relationId))) {
         const preservedReply = moduleId === 'projectPosts' && field.key === 'parent' && data.id && (store.projectPosts || []).some(row => row.id === data.id && row.parent === relationId) && (store.projectPosts || []).some(row => row.id === relationId);
-        if (!preservedReply) errors.push(`${field.label} refers to a missing or deleted record.`);
+        const preservedLead = field.relation === 'leads' && before?.id === data.id && before?.[field.key] === relationId && (store.leads || []).some(row => row.id === relationId);
+        if (!preservedReply && !preservedLead) errors.push(`${field.label} refers to a missing or deleted record.`);
       }
     }
   }
@@ -306,7 +312,7 @@ function addSystemRecord(store: Store, moduleId: string, data: Omit<ERPRecord, '
 
 function onWorkflow(store: Store, moduleId: string, record: ERPRecord, before?: ERPRecord) {
   const enabled = (trigger: string) => !live(store.automations).some(r => r.trigger === trigger && r.enabled === false);
-  if (moduleId === 'leads' && record.status === 'Won' && enabled('Lead Won')) {
+  if (moduleId === 'leads' && record.status === 'Won' && (!before || before.status !== 'Won') && enabled('Lead Won')) {
     const existingProject = (store.projects || []).find(r => r.lead === record.id);
     if (existingProject) { record.project = existingProject.id; record.customer ||= existingProject.customer; return; }
     let customer = record.customer ? get(store, 'customers', record.customer) : live(store.customers).find(r => (record.email && r.email?.toLowerCase() === record.email?.toLowerCase()) || (record.mobile && String(r.mobile) === String(record.mobile)));
@@ -390,7 +396,7 @@ export function applyMutation(initialStore: Store, moduleId: string, action: Act
     record.createdById = record.authorId;
   }
   if (!['delete', 'archive', 'permanentDelete'].includes(action)) {
-    const errors = validateRecord(moduleId, record, store);
+    const errors = validateRecord(moduleId, record, store, before);
     if (errors.length) throw new Error(errors.join(' '));
   }
   if (moduleId === 'allocations') {
@@ -404,7 +410,15 @@ export function applyMutation(initialStore: Store, moduleId: string, action: Act
     const delta = action === 'delete' ? 0 : n(record.quantity) - (action === 'create' || action === 'duplicate' ? 0 : n(before?.quantity));
     if (delta) addSystemRecord(store, 'stockHistory', { name: record.name, product: record.product, location: record.location, quantity: delta, reservedDelta: n(record.reserved) - n(before?.reserved), type: 'Stock Adjustment', sourceModule: moduleId, sourceId: record.id, date: now, actor: actorName(actor), notes: record.adjustmentReason || '' });
   }
-  if (!['delete', 'archive', 'permanentDelete'].includes(action)) onWorkflow(store, moduleId, record, before);
+  if (!['delete', 'archive', 'permanentDelete'].includes(action)) {
+    if (moduleId === 'leads') { record.profileVersion = 1; record.company = record.name; syncLeadCompany(store, record); }
+    if (moduleId === 'customers') for (const lead of store.leads || []) if (lead.customer === record.id) {
+      for (const [key, source] of Object.entries(companyFields)) if (safeData[source] !== undefined) lead[key] = record[source];
+    }
+    if (moduleId === 'customers') migrateLeadProfiles(store);
+    if (moduleId === 'projects') linkProjectCompany(store, record, before);
+    onWorkflow(store, moduleId, record, before);
+  }
   recalculate(store);
   for (const financialProject of live(store.projects)) if (n(financialProject.paidAmount) < -0.005 || n(financialProject.paidAmount) > n(financialProject.value) + 0.005) throw new Error('This change would leave project receipts outside the contract value. Update related payments or refunds first.');
   for (const purchase of live(store.purchases)) if (n(purchase.paidAmount) > purchaseTotal(purchase) + 0.005 || (purchase.status !== 'Received' && n(purchase.paidAmount) > 0)) throw new Error('This change would leave supplier payments against an unreceived or insufficient purchase amount. Update related supplier payments first.');
