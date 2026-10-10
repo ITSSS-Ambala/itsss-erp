@@ -1,5 +1,6 @@
 'use client';
 import { useState, type FormEvent } from 'react';
+import BrandLogo from '../brand-logo';
 import './login.css';
 
 export default function LoginForm({ returnTo }: { returnTo: string }) {
@@ -18,7 +19,7 @@ export default function LoginForm({ returnTo }: { returnTo: string }) {
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Unable to sign in.'); setBusy(false); }
   }
   return <main className="login-shell"><section className="login-card">
-    <img src="/favicon.svg" width="42" height="42" alt="ITSSS" />
+    <BrandLogo className="login-logo" />
     <p className="login-eyebrow">ITSSS BUSINESS HUB</p><h1>Welcome back.</h1><p className="login-description">Sign in to manage your customers, projects and team.</p>
     <form onSubmit={submit}>
       <label htmlFor="login-email">Email address</label><input id="login-email" name="email" type="email" autoComplete="username" maxLength={254} required disabled={busy} />

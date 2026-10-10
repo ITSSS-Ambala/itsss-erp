@@ -1,0 +1,17 @@
+.brand-logo-surface{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;background:#fff;border-radius:7px;padding:4px}
+.brand-logo-surface img{display:block;width:100%;height:100%;object-fit:contain}
+.brand.workspace-brand{flex-direction:column;align-items:flex-start;gap:9px;padding:0 10px 20px}
+.workspace-brand .brand-logo-surface{width:144px;height:81px;padding:6px}
+.sidebar .brand.workspace-brand strong,.boot .brand.workspace-brand strong{font-size:16px;letter-spacing:-.3px}
+.sidebar .brand.workspace-brand small,.boot .brand.workspace-brand small{font-size:9px;line-height:1.5;margin-top:4px}
+.boot .brand.workspace-brand{align-items:center;text-align:center;padding:0}
+.header-brand{display:inline-flex;align-items:center;flex-shrink:0;border-radius:7px}
+.header-logo{width:84px;height:48px}
+.topbar .global-search{flex:1;width:auto;max-width:560px}
+.page-footer{align-items:center;gap:12px;flex-wrap:wrap}
+.footer-brand{display:inline-flex;align-items:center;gap:9px}
+.footer-logo{width:62px;height:36px;padding:3px}
+.login-logo{width:164px;height:93px;padding:0}
+.company-logo-preview{background:#fff}
+@media(max-width:900px){.brand.workspace-brand{padding-left:7px;padding-right:7px}.workspace-brand .brand-logo-surface{width:130px;height:74px}.header-logo{width:74px;height:42px}}
+@media(max-width:640px){.sidebar .brand.workspace-brand{gap:9px}.sidebar .workspace-brand .brand-logo-surface{width:144px;height:81px}.header-logo{width:64px;height:37px;padding:3px}.footer-logo{width:56px;height:33px}}
