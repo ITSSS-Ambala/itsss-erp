@@ -42,8 +42,8 @@ async function stop() {
   server.kill('SIGTERM'); await exited;
 }
 async function request(path, options = {}, expected = 200) {
-  const response = await fetch(origin + path, { ...options, signal: AbortSignal.timeout(30000) });
-  assert.equal(response.status, expected, `${path} returned ${response.status}`);
+  const response = await fetch(origin + path, { ...options, signal: AbortSignal.timeout(path.startsWith('/api/recovery') ? 180000 : 30000) });
+  if (response.status !== expected) assert.equal(response.status, expected, `${path} returned ${response.status}: ${await response.text()}`);
   return response;
 }
 try {
@@ -62,7 +62,7 @@ try {
     assert.ok(!response.headers.get('content-type')?.includes('text/html'), 'Static assets must not return an HTML fallback');
   }
   record('production pages, public assets and built JavaScript/CSS assets');
-  for (const path of ['/api/workspace', '/api/notifications', '/api/files?key=files/test/test.txt', '/api/backup']) await request(path, {}, 401);
+  for (const path of ['/api/workspace', '/api/notifications', '/api/files?key=files/test/test.txt', '/api/backup', '/api/recovery']) await request(path, {}, 401);
   await request('/api/workspace', { headers: { 'oai-authenticated-user-id': 'forged-owner', 'oai-authenticated-user-email': env.ERP_ADMIN_EMAIL } }, 401);
   record('anonymous and forged identity-header access rejected');
   const staffSignIn = await request('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify({ email: staffEmail, password }) });
@@ -137,7 +137,7 @@ try {
   assert.equal(personalInbox.unreadCount, 42);
   assert.ok(personalInbox.notifications.every(row => row.recipientUserId === memberId && row.channel === 'In-App' && row.deliveryVersion === 1));
   const ownerInbox = await (await request('/api/notifications', { headers })).json();
-  assert.equal(ownerInbox.notifications.filter(row => row.type === 'Task Assignment').length, 0, 'the actor does not receive their own assignment event');
+  assert.equal(ownerInbox.notifications.filter(row => row.type === 'Task Assignment').length, 21, 'the administrator also receives their own assignment events');
   assert.equal((await (await request('/api/notifications', { headers: { Cookie: staffCookie } })).json()).notifications.length, 0);
   const readBody = JSON.stringify({ ids: [personalInbox.notifications[0].id] });
   await request('/api/notifications', { method: 'POST', headers: { Cookie: managedCookie, 'Content-Type': 'application/json' }, body: readBody }, 403);
@@ -228,6 +228,23 @@ try {
   assert.ok(!serializedBackup.includes(managedPassword) && !serializedBackup.includes(replacementPassword) && !serializedBackup.includes('scrypt$'));
   assert.ok(backup.store.vault.every(record => record.encrypted && !record.password));
   record('authenticated encrypted backup');
+  const clearId = savedReadIds[0];
+  await request('/api/notifications', { method: 'POST', headers: technicianHeaders, body: JSON.stringify({ action: 'clear', ids: [clearId, ownerInbox.notifications[0].id] }) }, 403);
+  const cleared = await (await request('/api/notifications', { method: 'POST', headers: technicianHeaders, body: JSON.stringify({ action: 'clear', ids: [clearId] }) })).json();
+  assert.ok(!cleared.notifications.some(row => row.id === clearId));
+  savedReadIds.splice(savedReadIds.indexOf(clearId), 1);
+  assert.ok((await (await request('/api/notifications', { headers })).json()).notifications.some(row => row.id === ownerInbox.notifications[0].id));
+  const recoveryPassword = randomBytes(24).toString('hex');
+  await request('/api/recovery', { headers: technicianHeaders }, 403);
+  await request('/api/recovery', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create', password: recoveryPassword }) }, 403);
+  const recoveryCreated = await (await request('/api/recovery', { method: 'POST', headers, body: JSON.stringify({ action: 'create', password: recoveryPassword }) })).json();
+  const recoveryId = recoveryCreated.backup.id;
+  assert.ok(['source', 'runtime'].includes(recoveryCreated.backup.application));
+  const recoveryBytes = Buffer.from(await (await request('/api/recovery?download=' + encodeURIComponent(recoveryId), { headers })).arrayBuffer());
+  assert.match(recoveryBytes.subarray(0, 16).toString(), /ITSSS-RECOVERY-1/);
+  assert.ok(!recoveryBytes.includes(Buffer.from(env.ERP_VAULT_KEY)));
+  await request('/api/recovery?download=../workspace.sqlite', { headers }, 400);
+  record('persistent clear notifications and admin-only password protected full recovery archive');
   await stop(); await start();
   const reloaded = await (await request('/api/workspace', { headers: { Cookie: cookie } })).json();
   assert.ok(reloaded.store.customers.some(row => row.id === created.createdRecordId));
@@ -245,6 +262,21 @@ try {
   await request('/api/auth/logout', { method: 'POST', headers: { Cookie: cookie, Origin: origin }, redirect: 'manual' }, 303);
   await request('/api/workspace', { headers: { Cookie: cookie } }, 401);
   record('logout revokes server-side session');
+  const recoveryLogin = await request('/api/auth/login', { method: 'POST', headers, body: JSON.stringify({ email: env.ERP_ADMIN_EMAIL, password }) });
+  const recoveryCookie = recoveryLogin.headers.get('set-cookie').split(';')[0];
+  const recoveryWorkspace = await (await request('/api/workspace', { headers: { Cookie: recoveryCookie } })).json();
+  const recoveryHeaders = { Cookie: recoveryCookie, Origin: origin, 'Content-Type': 'application/octet-stream', 'X-Recovery-Password': encodeURIComponent(recoveryPassword), 'X-Restore-Confirmed': 'RESTORE', 'X-Workspace-Revision': String(recoveryWorkspace.revision) };
+  const recoveryResult = await (await request('/api/recovery', { method: 'POST', headers: recoveryHeaders, body: recoveryBytes })).json();
+  assert.equal(recoveryResult.signInRequired, true); assert.ok(recoveryResult.safetyBackup);
+  await request('/api/workspace', { headers: { Cookie: recoveryCookie } }, 401);
+  await request('/api/workspace', { headers: { Cookie: managedCookie } }, 401);
+  const restoredOwnerLogin = await request('/api/auth/login', { method: 'POST', headers, body: JSON.stringify({ email: env.ERP_ADMIN_EMAIL, password }) });
+  const restoredOwnerCookie = restoredOwnerLogin.headers.get('set-cookie').split(';')[0];
+  const restoredWorkspace = await (await request('/api/workspace', { headers: { Cookie: restoredOwnerCookie } })).json();
+  assert.ok(restoredWorkspace.store.projects.some(row => row.id === attachmentProjectId));
+  assert.deepEqual(Buffer.from(await (await request(uploaded.url, { headers: { Cookie: restoredOwnerCookie } })).arrayBuffer()), bytes);
+  await request('/api/auth/login', { method: 'POST', headers, body: JSON.stringify({ email: managedEmail, password: replacementPassword }) });
+  record('full API restore, safety snapshot, uploaded file recovery, managed passwords and session revocation');
   await writeFile(resolve(`outputs/hostinger-${isolated ? 'standalone' : 'smoke'}-verification.json`), JSON.stringify({ deploymentUrl: 'https://crm.itsss.co.in', runtime: 'Next.js / Node.js 24', entryFile: '.next/standalone/server.js', isolatedFromSourceDependencies: isolated, checks, passed: true, scope: 'local production server; live Hostinger deployment not performed' }, null, 2));
 } finally {
   await stop();

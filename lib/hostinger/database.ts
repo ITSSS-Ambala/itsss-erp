@@ -2,17 +2,27 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { getHostingerConfig } from './config.ts';
-let connection: DatabaseSync | undefined;
-let connectionPath = '';
+import { recoverPendingRestore } from './restore-install.ts';
+// Startup scripts and Next.js bundles may load separate copies of this module.
+// Share the handle so restore closes every reader before replacing the database.
+type DatabaseState = { connection?: DatabaseSync; path: string };
+const processState = globalThis as typeof globalThis & { __itsssRuntimeDatabase?: DatabaseState };
+const state = processState.__itsssRuntimeDatabase ||= { path: '' };
 export function runtimeDatabase(): DatabaseSync {
   const { dataDirectory } = getHostingerConfig();
   const filename = join(dataDirectory, 'workspace.sqlite');
-  if (connection && connectionPath === filename) return connection;
-  connection?.close();
+  if (state.connection && state.path === filename) return state.connection;
+  closeRuntimeDatabase();
   mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
-  connection = new DatabaseSync(filename);
-  connectionPath = filename;
-  connection.exec(`
+  recoverPendingRestore(dataDirectory);
+  const connection = new DatabaseSync(filename);
+  try { initializeDatabase(connection); }
+  catch (error) { connection.close(); throw error; }
+  state.connection = connection; state.path = filename;
+  return connection;
+}
+export function initializeDatabase(database: DatabaseSync) {
+  database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
     PRAGMA busy_timeout = 5000;
@@ -36,11 +46,14 @@ export function runtimeDatabase(): DatabaseSync {
       member_id TEXT NOT NULL, notification_id TEXT NOT NULL, read_at TEXT NOT NULL,
       PRIMARY KEY (member_id, notification_id)
     );
+    CREATE TABLE IF NOT EXISTS notification_clears (
+      member_id TEXT NOT NULL, notification_id TEXT NOT NULL, cleared_at TEXT NOT NULL,
+      PRIMARY KEY (member_id, notification_id)
+    );
   `);
-  return connection;
 }
 export function closeRuntimeDatabase() {
-  connection?.close(); connection = undefined; connectionPath = '';
+  state.connection?.close(); state.connection = undefined; state.path = '';
 }
 class WorkspaceStatement {
   private query: string;

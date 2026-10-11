@@ -97,7 +97,7 @@ export function canViewRecord(store: Store, user: AccessUser, moduleId: string, 
   if (depth > 4 || !permit(user.role, moduleId, 'view', store)) return false;
   if (moduleId === 'notifications') {
     if (row.deliveryVersion !== 1 || !user.memberId || row.recipientUserId !== user.memberId || row.channel !== 'In-App') return false;
-    return notificationSourceVisible(store, user, row.sourceModule, row.sourceId, row.type);
+    return notificationSourceVisible(store, user, row.sourceModule, row.sourceId, row.type, row.sourceScope);
   }
   if (['Super Admin', 'Admin'].includes(user.role)) return true;
   if (moduleId === 'settings') return true;
@@ -150,9 +150,16 @@ export function canViewRecord(store: Store, user: AccessUser, moduleId: string, 
   return true;
 }
 
-export function notificationSourceVisible(store: Store, user: AccessUser, moduleId: string, recordId: string, type: string): boolean {
+export function notificationSourceVisible(store: Store, user: AccessUser, moduleId: string, recordId: string, type: string, removedScope?: ERPRecord): boolean {
   if (moduleId === 'notifications') return false;
-  const source = (store[moduleId] || []).find(row => row.id === recordId && !row.deletedAt && !row.archivedAt);
+  let source = (store[moduleId] || []).find(row => row.id === recordId && !row.deletedAt && !row.archivedAt);
+  if (['Record Deleted', 'Record Archived'].includes(type) && removedScope?.id === recordId) {
+    // Recheck current role/field permissions against the minimal former assignment.
+    // Temporary scope lets assigned technicians see a removed project's event.
+    source = { ...removedScope };
+    delete source.deletedAt; delete source.archivedAt;
+    store = { ...store, [moduleId]: [...(store[moduleId] || []).filter(row => row.id !== recordId), source] };
+  }
   if (!source || source.demo === true || !canViewRecord(store, user, moduleId, source)) return false;
   const hidden = hiddenFields(store, user, moduleId);
   if (hidden.has('name')) return false;
@@ -174,7 +181,8 @@ export function notificationSourceVisible(store: Store, user: AccessUser, module
     const productMasks = hiddenFields(store, user, 'products');
     if (!product || !canViewRecord(store, user, 'products', product) || productMasks.has('minimumStock') || productMasks.has('name')) return false;
   }
-  if (['New Lead', 'New Ticket', 'Lead Assigned', 'Task Assignment', 'Project Update', 'Record Update'].includes(type) && hidden.has('status')) return false;
+  if (['New Lead', 'New Ticket', 'Lead Assigned', 'Task Assignment', 'Project Update', 'Record Update', 'Record Created'].includes(type) && hidden.has('status')) return false;
+  if (type === 'Project Update' && hidden.has('progress')) return false;
   if (moduleId === 'projectPosts' && hidden.has('authorName')) return false;
   return true;
 }

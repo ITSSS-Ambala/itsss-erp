@@ -1,5 +1,5 @@
 import { loadWorkspace, loadNotificationWorkspace, notificationResponseData, apiError, checkOrigin } from '../../../lib/server';
-import { markNotificationsRead } from '../../../lib/hostinger/notification-reads';
+import { markNotificationsRead, clearNotifications } from '../../../lib/hostinger/notification-reads';
 
 export const dynamic = 'force-dynamic';
 export async function GET() {
@@ -14,7 +14,8 @@ export async function POST(request: Request) {
     const { store, user } = await loadWorkspace();
     const body = await request.json();
     if (!body || typeof body !== 'object' || Array.isArray(body) || body.all !== true && (!Array.isArray(body.ids) || body.ids.length > 1000)) throw new Error('Choose notifications to mark as read.');
-    markNotificationsRead(store, user, body.all === true ? undefined : body.ids);
+    if (body.action !== undefined && !['read', 'clear'].includes(body.action)) throw new Error('Choose a valid notification action.');
+    (body.action === 'clear' ? clearNotifications : markNotificationsRead)(store, user, body.all === true ? undefined : body.ids);
     return Response.json(notificationResponseData(store, user), { headers: { 'Cache-Control': 'private, no-store' } });
   } catch (error) { return apiError(error); }
 }

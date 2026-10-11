@@ -22,4 +22,6 @@
 .notification-center .notification-error{padding:12px 18px;font-size:11px;line-height:1.6;color:#c34755;background:color-mix(in srgb,#e3586d 8%,var(--card))}
 .notification-empty{display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center;padding:32px 22px;color:var(--muted)}
 .notification-empty strong{font-size:12px;color:var(--text)}.notification-empty p{font-size:11px;line-height:1.7;max-width:270px}
+.notification-page .notification-center{position:static;width:100%;max-width:100%;max-height:none;border:1px solid var(--border);border-radius:12px;box-shadow:none;overflow:visible}
+.notification-page .notification-list{max-height:70dvh;overflow-y:auto}.notification-toolbar{flex-wrap:wrap}
 @media(max-width:640px){.notification-center{position:fixed;top:110px;left:12px;right:12px;width:auto;max-width:none;max-height:calc(100dvh - 188px)}.notification-center .notification-open{padding:14px}.notification-heading{padding:15px 14px 12px}.notification-toolbar{padding:0 14px 12px}}

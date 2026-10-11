@@ -6,8 +6,8 @@ import { sealVault, openVault } from './vault';
 import { resolveModules, type Store } from './schema';
 import { resolveRole, permit, visibleStore, hiddenFields, dropdownPermissionsFor, projectCapabilitiesFor, type AccessUser } from './access';
 import { runAutomations, recalculate } from './engine';
-import { synchronizeNotifications, inboxNotifications } from './notifications';
-import { notificationReadDates } from './hostinger/notification-reads';
+import { synchronizeNotifications, inboxNotifications, memberIdentity } from './notifications';
+import { notificationReadDates, notificationClearedDates } from './hostinger/notification-reads';
 import { migrateLeadProfiles } from './lead-profiles';
 export { permit, visibleStore } from './access';
 export type { Store } from './schema';
@@ -44,7 +44,7 @@ export async function loadWorkspace() {
   if (!member) throw new Error('FORBIDDEN: Your account is not an active member of this ERP workspace.');
   const role = resolveRole(member.role,store);
   if (role==='Unassigned') throw new Error('FORBIDDEN: Your account needs an active role assignment.');
-  const user: AccessUser = {userId:identityUser.userId,displayName:identityUser.displayName,email:identityUser.email,memberId:member.id,role,employee:member.employee||member.technician,customer:member.customer};
+  const user: AccessUser = {...memberIdentity(member,store),userId:identityUser.userId,displayName:identityUser.displayName,email:identityUser.email,role};
   return {store,revision:migrated?await saveWorkspace(store,row.revision):row.revision,user};
 }
 export async function saveWorkspace(store:Store,revision:number) {
@@ -68,7 +68,7 @@ export async function loadNotificationWorkspace() {
   throw new Error('CONFLICT: Another update arrived. Please refresh.');
 }
 export function notificationResponseData(store:Store,user:AccessUser) {
-  const notifications = inboxNotifications(store,user,notificationReadDates(user.memberId));
+  const notifications = inboxNotifications(store,user,notificationReadDates(user.memberId),notificationClearedDates(user.memberId));
   return { notifications, unreadCount: notifications.filter(row => !row.read).length, checkedAt: new Date().toISOString() };
 }
 export function permissionsFor(store:Store,user:AccessUser) {

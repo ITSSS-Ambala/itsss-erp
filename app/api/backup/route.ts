@@ -23,7 +23,7 @@ export async function POST(request:Request) {
     restored.auditLogs.push({id:crypto.randomUUID(),name:'Workspace restored',actor:actor.name,actorId:actor.id,action:'restoreBackup',module:'backups',date,device:actor.device,ip:actor.ip,oldValue:JSON.stringify({revision}),newValue:JSON.stringify({modules:Object.keys(restored),records:Object.values(restored).reduce((total,rows)=>total+rows.length,0)})});
     restored.activities.push({id:crypto.randomUUID(),name:'Workspace restored from backup',module:'backups',action:'restoreBackup',actor:actor.name,date});
     restored.backups||=[];
-    restored.backups.push({id:crypto.randomUUID(),name:'Manual restore',type:'Manual',date,status:'Restored',destination:'Workspace database',notes:'Database records restored. R2 file references retained; workspace membership and current audit history preserved.'});
+    restored.backups.push({id:crypto.randomUUID(),name:'Manual restore',type:'Manual',date,status:'Restored',destination:'Workspace database',notes:'Database records restored. Private file references retained; workspace membership and current audit history preserved.'});
     await saveWorkspace(restored,revision);
     return Response.json({success:true});
   } catch(error) { return apiError(error); }

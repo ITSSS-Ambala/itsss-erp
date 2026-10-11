@@ -116,16 +116,30 @@ excluded. Due dates use Asia/Kolkata; timed follow-ups wait until their due time
 Assignment and record events are saved when a change succeeds. Active assigned
 staff, project/site teams, authorized supervisors and the relevant department
 receive updates within their access. Clients receive permitted updates for their
-own customer records. The actor does not receive their own event notification.
-Technician users need an Employee mapping and client users a Customer mapping.
+own customer records. Administrators, responsible users and the actor receive permitted creation, deletion, archive, restore, assignment and status events across standard and custom modules. Deleted-record events remain readable with current access permissions.
+Technician users need an Employee mapping (a matching active employee email also maps automatically); client users need a Customer mapping.
 
 Open sessions refresh the inbox every 15 seconds and on focus or opening the bell.
-Unread counts include the entire inbox. Individual and bulk read status persists
+Unread counts include the entire inbox. Individual and bulk read/clear status persists
 per user in SQLite across devices and server restarts; reading never changes a
-business record. Resolved reminders leave the active inbox and recurring issues
+business record. Use the trash icon or Clear all in the bell or Notifications page to clear your personal inbox; cleared reminders stay cleared until a new issue occurs. Resolved reminders leave the active inbox and recurring issues
 get a new unread alert. Saved events remain available when a user next signs in.
 Due reminders are evaluated during authenticated requests; email, WhatsApp, push
 and unattended scheduling require separate integrations.
+
+## Full backup and disaster recovery
+
+Open **Settings ? Full backup & restore** to save the complete SQLite database,
+uploaded bytes, users/passwords, inbox state, private recovery configuration and
+available app files in one password protected `.itsss-backup` archive. Archives
+persist under `ERP_DATA_DIR/backups` and can be downloaded. Full restore validates
+the archive, creates a safety backup, restores database and files, and revokes
+existing sessions. Keep a copy on another drive or device and retain its password.
+
+Use the [recovery guide](docs/RECOVERY.md) for crash recovery, CLI restore and app
+file recovery. The offline command runs without a working server/database. Legacy
+JSON remains a records-only option. Automatic scheduled/offsite backups require
+separate deployment configuration.
 
 ## Verification
 

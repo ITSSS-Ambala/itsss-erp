@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { resolve, relative } from 'node:path';
 import { runtimeDatabase, closeRuntimeDatabase } from '../lib/hostinger/database.ts';
 import { hashPassword } from '../lib/hostinger/password.ts';
-import { notificationReadDates, markNotificationsRead } from '../lib/hostinger/notification-reads.ts';
+import { notificationReadDates, markNotificationsRead, clearNotifications, notificationClearedDates } from '../lib/hostinger/notification-reads.ts';
 import { synchronizeNotifications, inboxNotifications, memberIdentity } from '../lib/notifications.ts';
 import type { Store } from '../lib/schema.ts';
 
@@ -15,6 +15,26 @@ before(async () => {
   await mkdir(resolve('outputs'), { recursive: true });
   directory = await mkdtemp(resolve('outputs/notification-read-test-'));
   Object.assign(process.env, { NODE_ENV: 'production', ERP_PUBLIC_URL: 'http://127.0.0.1:5185', ERP_DATA_DIR: directory, ERP_VAULT_KEY: randomBytes(32).toString('base64'), ERP_ADMIN_EMAIL: 'owner@itsss.test', ERP_ADMIN_PASSWORD_HASH: await hashPassword('Synthetic notification test password'), ERP_AUTH_USERS: '[]' });
+});
+
+test('clearing personal notifications survives restart, does not recreate reminders or affect another inbox, and allows new alerts', () => {
+  const now = new Date('2026-10-10T06:00:00Z');
+  const initial: Store = { users: [{ id: 'owner-clear', name: 'Owner', role: 'Super Admin', status: 'Active' }, { id: 'manager-clear', name: 'Manager', role: 'Manager', status: 'Active' }], tasks: [{ id: 'clear-work', name: 'Work', dueDate: '2026-10-10', status: 'Assigned' }] };
+  let store = synchronizeNotifications(initial, now).store;
+  const owner = memberIdentity(store.users[0], store), manager = memberIdentity(store.users[1], store);
+  const row = inboxNotifications(store, owner)[0], other = inboxNotifications(store, manager)[0];
+  assert.throws(() => clearNotifications(store, owner, [row.id, other.id]), /own inbox/);
+  assert.deepEqual(notificationClearedDates(owner.memberId), {});
+  clearNotifications(store, owner, [row.id], now);
+  closeRuntimeDatabase();
+  store = synchronizeNotifications(store, now).store;
+  assert.equal(inboxNotifications(store, owner, {}, notificationClearedDates(owner.memberId)).length, 0);
+  assert.equal(inboxNotifications(store, manager, {}, notificationClearedDates(manager.memberId)).length, 1);
+  store.tasks[0].status = 'Completed'; store = synchronizeNotifications(store, now).store;
+  store.tasks[0].status = 'Assigned'; store = synchronizeNotifications(store, now).store;
+  assert.equal(inboxNotifications(store, owner, {}, notificationClearedDates(owner.memberId)).length, 1, 'a recurring issue is a new notification');
+  clearNotifications(store, owner, undefined);
+  assert.equal(inboxNotifications(store, owner, {}, notificationClearedDates(owner.memberId)).length, 0);
 });
 after(async () => {
   closeRuntimeDatabase();

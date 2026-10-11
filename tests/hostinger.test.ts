@@ -55,6 +55,14 @@ test('workspace revision updates persist and only one stale writer can succeed',
   closeRuntimeDatabase();
   assert.equal((await workspaceDatabase.prepare('SELECT data, revision FROM erp_workspace WHERE id = ?').bind('test').first<{ revision: number }>())?.revision, 1);
 });
+test('startup and separately loaded server modules share one SQLite connection and close it together', async () => {
+  const duplicate = await import(new URL('../lib/hostinger/database.ts?separate-server-bundle', import.meta.url).href);
+  const original = runtimeDatabase();
+  assert.equal(duplicate.runtimeDatabase(), original);
+  duplicate.closeRuntimeDatabase();
+  assert.throws(() => original.prepare('SELECT 1'), /not open|closed/);
+  assert.notEqual(runtimeDatabase(), original);
+});
 test('opaque sessions persist across restarts and revoke on sign-out, expiry and password rotation', async () => {
   const result = await login('OWNER@itsss.test', password);
   assert.ok(result);

@@ -37,8 +37,9 @@ export async function POST(request:Request) {
     if(action==='createOption') {
       const data=body.data&&typeof body.data==='object'&&!Array.isArray(body.data)?body.data as {name?:unknown}:{};
       const created=createDropdownOption(store,user,{moduleId,fieldKey:String(body.field||''),name:data.name,expectedRevision:body.revision,revision},actor);
-      const nextRevision=created.reused?revision:await saveWorkspace(created.store,revision);
-      return workspaceResponse(created.store,nextRevision,user,{option:{value:created.value,reused:created.reused,module:moduleId,field:String(body.field||'')}});
+      const next=created.reused?created.store:synchronizeNotifications(created.store,new Date(),store,user.memberId).store;
+      const nextRevision=created.reused?revision:await saveWorkspace(next,revision);
+      return workspaceResponse(next,nextRevision,user,{option:{value:created.value,reused:created.reused,module:moduleId,field:String(body.field||'')}});
     }
     let next:Store=store;
     let createdRecordId:string|undefined;

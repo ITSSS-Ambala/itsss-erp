@@ -360,6 +360,7 @@ export function applyMutation(initialStore: Store, moduleId: string, action: Act
     record = { ...(action === 'duplicate' ? existing : {}), ...safeData, id: uid(moduleId.slice(0, 3).toUpperCase()), createdAt: now, updatedAt: now, createdBy: actorName(actor) };
     for (const key of ['deletedAt', 'deletedBy', 'deletionReason', 'archivedAt', 'systemGenerated', 'automationKey']) delete record[key];
     if (action === 'duplicate') {
+      delete record.demo;
       record.name = `${record.name || module.singular} (copy)`;
       if (moduleId === 'leads') { record.status = 'New'; delete record.project; delete record.customer; }
       if (moduleId === 'projects') { record.status = 'Planning'; record.progress = 0; delete record.lead; delete record.completedDate; }

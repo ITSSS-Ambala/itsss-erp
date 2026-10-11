@@ -17,7 +17,8 @@ async function addDirectory(directory) {
 }
 for (const directory of ['app', 'components', 'hooks', 'lib', 'public', 'tests']) await addDirectory(directory);
 for (const filename of ['package.json', 'package-lock.json', 'next.config.ts', 'tsconfig.json', 'postcss.config.mjs', 'eslint.config.mjs', '.npmrc', '.gitignore', '.env.example']) await addFile(filename);
-for (const filename of ['start-hostinger.mjs', 'prepare-hostinger.mjs', 'hash-password.mjs', 'generate-vault-key.mjs', 'verify-hostinger.mjs', 'package-hostinger.mjs']) await addFile(`scripts/${filename}`);
+for (const filename of ['start-hostinger.mjs', 'prepare-hostinger.mjs', 'hash-password.mjs', 'generate-vault-key.mjs', 'verify-hostinger.mjs', 'package-hostinger.mjs', 'recovery.mjs']) await addFile(`scripts/${filename}`);
+await addFile('docs/RECOVERY.md');
 await addFile('docs/HOSTINGER_DEPLOYMENT.md', 'DEPLOYMENT.md');
 await addFile('docs/HOSTINGER_DEPLOYMENT.md');
 await addFile('docs/FEATURE_AUDIT.md');

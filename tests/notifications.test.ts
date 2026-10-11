@@ -119,7 +119,7 @@ test('work assignments reach each responsible technician and never unrelated tec
   const before = fixture(), after = structuredClone(before);
   after.tasks = [{ id: 'task', name: 'Install camera', project: 'project-a', assignedTo: 'employee-a', dueDate: '2026-10-10', status: 'Assigned', createdAt: now.toISOString() }];
   const synced = synchronizeNotifications(after, now, before, 'owner');
-  assert.deepEqual(deliveredTo(synced.store, 'Task Assignment'), ['manager', 'tech-a']);
+  assert.deepEqual(deliveredTo(synced.store, 'Task Assignment'), ['manager', 'owner', 'tech-a']);
   assert.equal(inbox(synced.store, 'tech-b').length, 0);
   assert.equal(inbox(synced.store, 'client-b').length, 0);
   assert.equal(inbox(synced.store, 'tech-a').filter(row => row.type === 'Task Assignment').length, 1);
@@ -131,7 +131,7 @@ test('ticket status changes notify the affected client and assigned staff', () =
   before.tickets = [{ id: 'ticket', name: 'Camera offline', customer: 'customer-a', project: 'project-a', technician: 'employee-a', status: 'Assigned' }];
   after.tickets = [{ ...before.tickets[0], status: 'Resolved', updatedAt: now.toISOString() }];
   const synced = synchronizeNotifications(after, now, before, 'tech-a');
-  assert.deepEqual(deliveredTo(synced.store, 'Record Update'), ['client-a', 'manager', 'owner']);
+  assert.deepEqual(deliveredTo(synced.store, 'Record Update'), ['client-a', 'manager', 'owner', 'tech-a']);
   assert.match(inbox(synced.store, 'client-a').find(row => row.type === 'Record Update')!.message, /Resolved/);
 });
 
@@ -148,7 +148,7 @@ test('multiple assigned project members and authorized custom roles get their ow
   after.users.push({ id: 'coordinator-user', name: 'Coordinator', role: 'coordinator', employee: 'coordinator-employee', status: 'Active' });
   after.projects[0] = { ...after.projects[0], technicians: ['employee-a', 'employee-b'], manager: 'coordinator-employee', updatedAt: now.toISOString() };
   const synced = synchronizeNotifications(after, now, before, 'owner');
-  assert.deepEqual(deliveredTo(synced.store, 'Project Update'), ['client-a', 'coordinator-user', 'manager', 'sales', 'tech-a', 'tech-b']);
+  assert.deepEqual(deliveredTo(synced.store, 'Project Update'), ['client-a', 'coordinator-user', 'manager', 'owner', 'sales', 'tech-a', 'tech-b']);
   assert.equal(inbox(synced.store, 'coordinator-user').filter(row => row.type === 'Project Update').length, 1);
 });
 
@@ -157,7 +157,7 @@ test('project comments route through the parent project and preserve individual 
   after.projectPosts = [{ id: 'post', project: 'project-a', name: 'Update discussion', kind: 'Comment', body: 'Installation approved', authorId: 'owner', authorName: 'Owner', createdAt: now.toISOString() }];
   const synced = synchronizeNotifications(after, now, before, 'owner');
   const rows = synced.store.notifications.filter(row => row.type === 'Project Comment');
-  assert.deepEqual(rows.map(row => row.recipientUserId).sort(), ['client-a', 'manager', 'sales', 'tech-a']);
+  assert.deepEqual(rows.map(row => row.recipientUserId).sort(), ['client-a', 'manager', 'owner', 'sales', 'tech-a']);
   assert.equal(new Set(rows.map(row => row.id)).size, rows.length);
   assert.ok(rows.every(row => row.openModule === 'projects' && row.openRecordId === 'project-a'));
 });
@@ -215,4 +215,81 @@ test('the inbox contains all notifications beyond the previous 15-item limit and
   const synced = synchronizeNotifications(store, now);
   assert.equal(inbox(synced.store, 'tech-a').length, 21);
   assert.throws(() => applyMutation(store, 'notifications', 'create', { name: 'Made up', type: 'Payment Overdue' }), /read-only/);
+});
+
+test('creation across business and custom modules reaches the administrator and respective creator', () => {
+  const before = fixture(), after = structuredClone(before);
+  after.payments = [];
+  after.events = [{ id: 'meeting', name: 'Site meeting', startAt: '2026-11-01T12:00', assignedTo: 'employee-a', project: 'project-a', createdById: 'owner', status: 'Planned', createdAt: now.toISOString() }];
+  after.documents = [{ id: 'doc', name: 'Project instructions', project: 'project-a', createdById: 'sales', status: 'Active', createdAt: now.toISOString() }];
+  after.customModules = [{ id: 'custom', moduleId: 'inspections', name: 'Inspections', singular: 'Inspection', icon: 'ClipboardCheck', group: 'Operations', status: 'Active', fields: '[]' }];
+  after.inspections = [{ id: 'inspection', name: 'First inspection', createdAt: now.toISOString() }];
+  const result = synchronizeNotifications(after, now, before, 'owner').store;
+  assert.ok(inbox(result, 'owner').some(row => row.sourceId === 'meeting' && row.type === 'Task Assignment'));
+  assert.ok(inbox(result, 'tech-a').some(row => row.sourceId === 'meeting'));
+  assert.ok(inbox(result, 'sales').some(row => row.sourceId === 'doc'));
+  assert.ok(inbox(result, 'owner').some(row => row.sourceId === 'inspection'));
+  assert.ok(!inbox(result, 'tech-b').some(row => row.sourceId === 'meeting'));
+});
+
+test('deleted and archived project events survive source removal, retain only scope and enforce current permissions', () => {
+  const before = fixture(); before.payments = [];
+  for (const field of ['deletedAt', 'archivedAt']) {
+    const after = structuredClone(before); after.projects[0][field] = now.toISOString();
+    after.projects[0].privateToken = 'never disclose';
+    let result = synchronizeNotifications(after, now, before, 'owner').store;
+    const type = field === 'deletedAt' ? 'Record Deleted' : 'Record Archived';
+    assert.deepEqual(deliveredTo(result, type), ['client-a', 'manager', 'owner', 'sales', 'tech-a']);
+    assert.equal(inbox(result, 'tech-a').filter(row => row.type === type).length, 1);
+    assert.equal(inbox(result, 'tech-b').length, 0);
+    assert.equal(inbox(result, 'owner').find(row => row.type === type)?.sourceScope, undefined);
+    assert.ok(!JSON.stringify(result.notifications).includes('never disclose'));
+    const removed = structuredClone(result); removed.projects = [];
+    result = synchronizeNotifications(removed, new Date('2026-10-10T07:00:00Z'), result, 'owner').store;
+    assert.equal(inbox(result, 'tech-a').filter(row => row.type === 'Record Deleted').length, field === 'deletedAt' ? 2 : 1);
+    result.roles = [{ id: 'role', name: 'Technician', allowedModules: ['tasks'], permissions: ['view'], status: 'Active' }];
+    assert.equal(inbox(result, 'tech-a').length, 0);
+  }
+});
+
+test('restoration and inactive status changes generate fresh notifications without recurring duplicate deliveries', () => {
+  const before = fixture(); before.payments = []; before.leads = [{ id: 'lead', name: 'Real lead', status: 'New', assignedTo: 'sales-employee' }];
+  let after = structuredClone(before); after.leads[0].status = 'Inactive'; after.leads[0].updatedAt = now.toISOString();
+  let result = synchronizeNotifications(after, now, before, 'sales').store;
+  assert.ok(inbox(result, 'owner').some(row => row.sourceId === 'lead' && row.type === 'Record Update'));
+  assert.ok(inbox(result, 'sales').some(row => row.sourceId === 'lead' && row.type === 'Record Update'));
+  after = structuredClone(before); after.leads[0].deletedAt = now.toISOString();
+  result = synchronizeNotifications(after, now, before, 'owner').store;
+  const restored = structuredClone(result); delete restored.leads[0].deletedAt; restored.leads[0].updatedAt = '2026-10-10T07:00:00Z';
+  const sync = synchronizeNotifications(restored, new Date('2026-10-10T07:00:00Z'), result, 'owner');
+  assert.ok(inbox(sync.store, 'owner').some(row => row.sourceId === 'lead' && row.type === 'Record Restored'));
+  assert.equal(synchronizeNotifications(sync.store, new Date('2026-10-10T07:00:00Z'), result, 'owner').changed, 0);
+});
+
+test('email based identities receive creator events and mapped technician notifications', () => {
+  const before = fixture(); before.payments = [];
+  before.users[2].email = 'sales@itsss.test';
+  before.users[5].email = 'technician@itsss.test'; delete before.users[5].employee;
+  before.employees[0].email = 'technician@itsss.test';
+  const after = structuredClone(before), creator = memberIdentity(before.users[2], before);
+  after.documents = [{ id: 'private-doc', name: 'Own instructions', createdById: creator.userId, status: 'Active' }];
+  after.tasks = [{ id: 'work', name: 'Assigned work', assignedTo: 'employee-a', status: 'Assigned' }];
+  const result = synchronizeNotifications(after, now, before).store;
+  assert.ok(inbox(result, 'sales').some(row => row.sourceId === 'private-doc'));
+  assert.ok(inbox(result, 'tech-a').some(row => row.sourceId === 'work'));
+});
+
+test('duplicated demo records become real records and vault events contain no credential values', () => {
+  const before = fixture(); before.payments = []; before.leads = [{ id: 'demo-lead', name: 'Sample', status: 'New', demo: true }];
+  const duplicated = applyMutation(before, 'leads', 'duplicate', {}, 'demo-lead');
+  assert.equal(duplicated.record.demo, undefined);
+  let result = synchronizeNotifications(duplicated.store, now, before, 'owner').store;
+  assert.ok(inbox(result, 'owner').some(row => row.sourceId === duplicated.record.id && row.type === 'New Lead'));
+  const after = structuredClone(result);
+  after.vault = [{ id: 'credential', name: 'Sensitive server reference', password: 'Never expose password', status: 'Active' }];
+  result = synchronizeNotifications(after, now, result, 'owner').store;
+  const event = inbox(result, 'owner').find(row => row.sourceModule === 'vault');
+  assert.equal(event?.name, 'Credential reference');
+  assert.ok(!JSON.stringify(result.notifications).includes('Never expose password'));
+  assert.ok(!inbox(result, 'sales').some(row => row.sourceModule === 'vault'));
 });

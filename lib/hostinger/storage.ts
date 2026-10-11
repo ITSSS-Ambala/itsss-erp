@@ -7,6 +7,8 @@ import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { getHostingerConfig } from './config.ts';
 type Metadata = { key: string; size: number; httpMetadata: { contentType?: string }; customMetadata: Record<string, string> };
+let pendingWrites = 0;
+export const activeFileWrites = () => pendingWrites;
 function locations(key: string) {
   if (!/^files\/[a-zA-Z0-9-]+\/[a-zA-Z0-9._-]+$/.test(key) || ['.', '..'].includes(key.split('/').at(-1)!)) throw new Error('Invalid file key.');
   const digest = createHash('sha256').update(key).digest('hex');
@@ -27,6 +29,8 @@ async function head(key: string): Promise<Metadata | null> {
 export const privateBucket = {
   head,
   async put(key: string, body: ReadableStream<Uint8Array>, options: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> } = {}) {
+    pendingWrites++;
+    try {
     const files = locations(key);
     await mkdir(files.folder, { recursive: true, mode: 0o700 });
     if (await head(key)) throw new Error('A file with this key already exists.');
@@ -44,6 +48,7 @@ export const privateBucket = {
       await rename(temporary, files.bytes);
       await rename(temporaryMetadata, files.metadata);
     } finally { await Promise.all([rm(temporary, { force: true }), rm(temporaryMetadata, { force: true })]); }
+    } finally { pendingWrites--; }
   },
   async get(key: string, options?: { range?: { offset: number; length: number } }) {
     const metadata = await head(key);

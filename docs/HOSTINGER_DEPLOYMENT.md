@@ -179,6 +179,19 @@ bytes. Existing R2 objects and their metadata require a separate migration into
 private storage. The initial workspace contains demo data; hiding its label
 does not remove those records.
 
+## Full recovery archives
+
+Administrators can create and download full recovery archives in **Settings ?
+Full backup & restore**. The private `ERP_DATA_DIR/backups` folder contains
+password protected `.itsss-backup` files with SQLite, uploaded file bytes, managed
+passwords, notification state, private recovery configuration and available app
+files. A safety archive is saved before full restore, and restored sessions are
+revoked. Download a copy off the server and keep its password separately.
+
+The standalone build includes `recovery-tool/scripts/recovery.mjs`, which can
+restore data and application files without a running Next.js server. Follow the
+[recovery guide](RECOVERY.md) for exact commands and private configuration handling.
+
 ## Local verification
 
 With Node.js 24:
