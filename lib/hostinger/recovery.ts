@@ -15,6 +15,7 @@ import type { Store } from '../schema.ts';
 const archiveName = /^(backup|safety)-\d{8}T\d{6}Z-[a-f0-9-]{36}\.itsss-backup$/;
 const columns: Record<string, string[]> = {
   erp_workspace: ['id', 'data', 'revision', 'updated_at'],
+  erp_workspace_migrations: ['workspace_id', 'migration', 'revision', 'data', 'created_at'],
   auth_passwords: ['member_id', 'password_hash', 'configuration_hash'],
   notification_reads: ['member_id', 'notification_id', 'read_at'],
   notification_clears: ['member_id', 'notification_id', 'cleared_at'],
@@ -205,7 +206,14 @@ export async function restoreRecoveryBackup(filename: string, password: string, 
     restored.auditLogs.push({ id: randomUUID(), name: 'Full recovery restored', actor: options.actor?.name || 'Offline recovery', actorId: options.actor?.id, action: 'restoreRecovery', module: 'backups', date, details: 'Database, uploaded files, users and password records restored. Sessions revoked.' });
     restored.activities.push({ id: randomUUID(), name: 'Full recovery restored', module: 'backups', action: 'restoreRecovery', date });
     restored.backups.push({ id: randomUUID(), name: 'Full recovery restore', type: 'Manual', date, status: 'Restored', destination: 'Private database and file storage', notes: safety ? `Safety backup: ${safety.id}` : 'Previous data retained in recovery staging directory.' });
-    const encrypted = await sealVault(restored, config?.vaultKey || configuration.ERP_VAULT_KEY), prepared = new DatabaseSync(join(directory, 'prepared.sqlite'));
+    const targetVaultKey = config?.vaultKey || configuration.ERP_VAULT_KEY;
+    // Historical cleanup snapshots must remain decryptable after restoring with a different vault key.
+    for (const row of savedTables!.erp_workspace_migrations) {
+      const snapshot: unknown = JSON.parse(String(row.data));
+      validateStore(snapshot);
+      row.data = JSON.stringify(await sealVault(await openVault(snapshot, configuration.ERP_VAULT_KEY), targetVaultKey));
+    }
+    const encrypted = await sealVault(restored, targetVaultKey), prepared = new DatabaseSync(join(directory, 'prepared.sqlite'));
     try {
       initializeDatabase(prepared);
       prepared.exec('BEGIN IMMEDIATE');

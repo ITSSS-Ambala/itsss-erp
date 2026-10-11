@@ -132,7 +132,12 @@ that account. Failed sign-in attempts are limited per configured account.
 
 The configured administrator must make the first authenticated workspace request.
 An additional account cannot claim an empty workspace. Initialization creates
-that administrator as Super Admin and seeds the existing demo records.
+that administrator as Super Admin and seeds one linked example per populated
+module. The 11 standard roles remain functional access configuration. Existing
+workspaces receive a one-time cleanup on the next authenticated load, with a
+pre-cleanup snapshot retained in SQLite with vault records encrypted. Real records
+and their linked sample dependencies are preserved; uploaded files, passwords
+and sessions remain intact.
 
 To allow a team member:
 

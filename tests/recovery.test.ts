@@ -26,6 +26,7 @@ before(async () => {
   const store: Store = { users: [{ id: 'owner', name: 'Owner', email: 'owner@itsss.test', role: 'Super Admin', status: 'Active' }, { id: 'staff', name: 'Staff', email: 'staff@itsss.test', role: 'Sales', status: 'Active' }], roles: [], settings: [{ id: 'company', name: 'Original company' }], documents: [{ id: 'doc', name: 'Original project document', attachments: [{ key: fileKey }], status: 'Active' }], vault: [{ id: 'secret', name: 'Private credential', password: 'super-secret-vault-value' }], tasks: [], notifications: [], auditLogs: [], activities: [], backups: [] };
   await privateBucket.put(fileKey, new Blob([fileBytes]).stream(), { customMetadata: { name: 'project.txt', creatorId: 'owner', module: 'documents', recordId: 'doc' }, httpMetadata: { contentType: 'text/plain' } });
   runtimeDatabase().prepare('INSERT INTO erp_workspace (id,data,revision,updated_at) VALUES (?,?,?,?)').run('main', JSON.stringify(await sealVault(store, originalKey)), 5, 'now');
+  runtimeDatabase().prepare('INSERT INTO erp_workspace_migrations (workspace_id,migration,revision,data,created_at) VALUES (?,?,?,?,?)').run('main', 'demo-content-v1', 4, JSON.stringify(await sealVault(store, originalKey)), 'now');
   runtimeDatabase().prepare('INSERT INTO auth_passwords (member_id,password_hash) VALUES (?,?)').run('staff', await hashPassword(managedPassword));
   runtimeDatabase().prepare('INSERT INTO notification_reads VALUES (?,?,?)').run('staff', 'read-notification', 'read-date');
   runtimeDatabase().prepare('INSERT INTO notification_clears VALUES (?,?,?)').run('staff', 'cleared-notification', 'clear-date');
@@ -69,6 +70,8 @@ test('full online restore restores users, managed passwords and files, reencrypt
   const currentKey = randomBytes(32).toString('base64'), row = runtimeDatabase().prepare('SELECT data FROM erp_workspace WHERE id=?').get('main')!;
   const current = await openVault(JSON.parse(String(row.data)), originalKey); current.settings[0].name = 'Later company'; current.documents = []; process.env.ERP_VAULT_KEY = currentKey;
   runtimeDatabase().prepare('UPDATE erp_workspace SET data=?,revision=7 WHERE id=?').run(JSON.stringify(await sealVault(current, currentKey)), 'main');
+  const snapshot = await openVault(JSON.parse(String(runtimeDatabase().prepare('SELECT data FROM erp_workspace_migrations').get()?.data)), originalKey);
+  runtimeDatabase().prepare('UPDATE erp_workspace_migrations SET data=?').run(JSON.stringify(await sealVault(snapshot, currentKey)));
   await rm(join(directory, 'files'), { recursive: true, force: true });
   runtimeDatabase().prepare('DELETE FROM auth_passwords').run();
   const result = await restoreRecoveryBackup((await recoveryBackupFile(backup.id)).filename, password, { expectedRevision: 7, actor: { id: 'owner', name: 'Owner' } });
@@ -76,6 +79,9 @@ test('full online restore restores users, managed passwords and files, reencrypt
   closeRuntimeDatabase();
   const restored = await openVault(JSON.parse(String(runtimeDatabase().prepare('SELECT data FROM erp_workspace WHERE id=?').get('main')?.data)), currentKey);
   assert.equal(restored.settings[0].name, 'Original company'); assert.equal(restored.vault[0].password, 'super-secret-vault-value');
+  const restoredSnapshot = await openVault(JSON.parse(String(runtimeDatabase().prepare('SELECT data FROM erp_workspace_migrations').get()?.data)), currentKey);
+  assert.equal(restoredSnapshot.vault[0].password, 'super-secret-vault-value');
+  assert.equal(restoredSnapshot.settings[0].name, 'Original company');
   assert.ok(await verifyPassword(managedPassword, String(runtimeDatabase().prepare('SELECT password_hash FROM auth_passwords WHERE member_id=?').get('staff')?.password_hash)));
   assert.deepEqual(Buffer.from(await (await privateBucket.get(fileKey))!.arrayBuffer()), fileBytes);
   assert.equal(runtimeDatabase().prepare('SELECT COUNT(*) AS count FROM auth_sessions').get()?.count, 0);

@@ -5,6 +5,7 @@ import { cp, mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { resolve, relative } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { hashPassword } from '../lib/hostinger/password.ts';
 
 await mkdir(resolve('outputs'), { recursive: true });
@@ -82,6 +83,35 @@ try {
   const headers = { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' };
   let workspace = await (await request('/api/workspace', { headers })).json();
   assert.equal(workspace.user.role, 'Super Admin');
+  for (const [moduleId, rows] of Object.entries(workspace.store)) assert.ok(rows.filter(row => row.demo === true).length <= 1, `${moduleId} has surplus demo records`);
+  assert.equal(workspace.store.roles.length, 11);
+  assert.equal(workspace.store.leads.length, 1);
+  assert.equal(workspace.store.customers.length, 1);
+  // Exercise an existing database upgrade through the built production API.
+  await stop();
+  const legacyDatabase = new DatabaseSync(resolve(state, 'workspace.sqlite'));
+  let legacyData, legacyRevision;
+  try {
+    const row = legacyDatabase.prepare('SELECT data, revision FROM erp_workspace WHERE id = ?').get('main');
+    const legacyStore = JSON.parse(String(row.data));
+    delete legacyStore.settings[0].demoContentVersion;
+    for (const moduleId of ['employees', 'products', 'projects']) legacyStore[moduleId].push({ ...legacyStore[moduleId][0], id: `DEMO-EXTRA-${moduleId}`, demo: true });
+    legacyStore.notes.push({ id: 'real-upgrade-note', name: 'Actual project history', relatedModule: 'projects', relatedId: legacyStore.projects[0].id, content: 'Preserve this real record during demo cleanup.' });
+    legacyData = JSON.stringify(legacyStore); legacyRevision = Number(row.revision) + 1;
+    legacyDatabase.prepare('UPDATE erp_workspace SET data = ?, revision = ? WHERE id = ?').run(legacyData, legacyRevision, 'main');
+  } finally { legacyDatabase.close(); }
+  await start();
+  workspace = await (await request('/api/workspace', { headers })).json();
+  assert.equal(workspace.revision, legacyRevision + 1);
+  for (const [moduleId, rows] of Object.entries(workspace.store)) assert.ok(rows.filter(row => row.demo === true).length <= 1, `${moduleId} cleanup failed`);
+  assert.ok(workspace.store.notes.some(row => row.id === 'real-upgrade-note' && row.relatedId === 'PRJ-001'));
+  const snapshotDatabase = new DatabaseSync(resolve(state, 'workspace.sqlite'), { readOnly: true });
+  try {
+    assert.equal(snapshotDatabase.prepare('SELECT data FROM erp_workspace_migrations WHERE migration = ?').get('demo-content-v1')?.data, legacyData);
+    assert.equal(snapshotDatabase.prepare('SELECT COUNT(*) AS count FROM erp_workspace_migrations').get()?.count, 1);
+  } finally { snapshotDatabase.close(); }
+  assert.equal((await (await request('/api/workspace', { headers })).json()).revision, workspace.revision, 'cleanup runs once');
+  record('one demo example per populated module, automatic legacy cleanup, preserved real links and safety snapshot');
   await request('/api/workspace', { headers: { Cookie: staffCookie } }, 401);
   const viewerRole = workspace.store.roles.find(role => role.name === 'Viewer');
   assert.ok(viewerRole);

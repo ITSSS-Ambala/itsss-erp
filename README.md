@@ -96,7 +96,16 @@ Business records, password hashes and sessions persist in `workspace.sqlite`;
 files persist under the private `files/` directory. Revision checks prevent stale writes. Vault
 records remain AES-256-GCM encrypted in storage and JSON backups.
 
-A fresh workspace seeds demo records. Deployment does not copy the old local
+A fresh workspace seeds one linked example per populated module (65 examples),
+with all 11 standard access roles retained as operational configuration. Uploads,
+notifications and backups start empty until actual files or events exist.
+Existing workspaces receive a one-time cleanup on their next authenticated load:
+only records still marked as demo are reduced, and real records and the sample
+dependencies they reference are preserved. A copy of the original workspace,
+with vault records encrypted, is saved atomically in SQLite's
+`erp_workspace_migrations` table before the cleanup; full recovery backups include
+it. The cleanup does not repeat after users edit or remove examples. Deployment
+does not copy the old local
 database, uploads or business records. Back up SQLite consistently, the file
 directory and the vault key. Manual JSON backups contain file references, not
 uploaded bytes or login password hashes. Retain the SQLite database to retain

@@ -9,6 +9,9 @@ import { runAutomations, recalculate } from './engine';
 import { synchronizeNotifications, inboxNotifications, memberIdentity } from './notifications';
 import { notificationReadDates, notificationClearedDates } from './hostinger/notification-reads';
 import { migrateLeadProfiles } from './lead-profiles';
+import { migrateDemoContent, DEMO_CONTENT_VERSION } from './demo-content';
+import { runtimeDatabase } from './hostinger/database';
+import { saveWorkspaceMigration } from './hostinger/workspace-migrations';
 export { permit, visibleStore } from './access';
 export type { Store } from './schema';
 export async function identity() {
@@ -25,7 +28,8 @@ export async function loadWorkspace() {
     const data = createSeed();
     const ownerRole = data.roles.find(role => role.name === 'Super Admin');
     if (!ownerRole) throw new Error('Administrator role is unavailable.');
-    data.users = [{id:identityUser.userId,name:identityUser.displayName,email:identityUser.email,role:ownerRole.id,status:'Active',identityId:identityUser.userId}];
+    data.users = data.users.filter(user => String(user.email).toLowerCase() !== identityUser.email.toLowerCase());
+    data.users.push({id:identityUser.userId,name:identityUser.displayName,email:identityUser.email,role:ownerRole.id,status:'Active',identityId:identityUser.userId});
     data.settings = [{...data.settings?.[0],id:'company',name:'ITSSS',fullName:'IT Smart Solution and Services',currency:'INR',theme:'Light',demo:true}];
     const encrypted = await sealVault(data,env.ERP_VAULT_KEY||'');
     await env.DB.prepare('INSERT OR IGNORE INTO erp_workspace (id,data,revision,updated_at) VALUES (?,?,0,?)').bind('main',JSON.stringify(encrypted),new Date().toISOString()).run();
@@ -35,6 +39,15 @@ export async function loadWorkspace() {
   const store: Store = await openVault(JSON.parse(row.data),env.ERP_VAULT_KEY||'');
   let migrated=false;
   migrated=migrateLeadProfiles(store);
+  let demoMigrated = false;
+  if (Number(store.settings?.[0]?.demoContentVersion || 0) < DEMO_CONTENT_VERSION) {
+    const loginEmails = new Set([identityUser.email.toLowerCase(), ...getHostingerConfig().accounts.map(account => account.email)]);
+    const credentialedIds = new Set(runtimeDatabase().prepare('SELECT member_id FROM auth_passwords').all().map(row => String(row.member_id)));
+    for (const session of runtimeDatabase().prepare('SELECT DISTINCT email FROM auth_sessions').all()) loginEmails.add(String(session.email).toLowerCase());
+    const protectedUserIds = (store.users || []).filter(member => credentialedIds.has(member.id) || loginEmails.has(String(member.email).toLowerCase())).map(member => member.id);
+    demoMigrated = migrateDemoContent(store, protectedUserIds);
+  }
+  migrated = demoMigrated || migrated;
   for(const member of store.users||[]) {
     const legacy=(store.roles||[]).find(role=>!role.deletedAt&&role.status!=='Inactive'&&role.name===member.role);
     if(legacy&&legacy.id!==member.role){member.role=legacy.id;migrated=true;}
@@ -45,7 +58,10 @@ export async function loadWorkspace() {
   const role = resolveRole(member.role,store);
   if (role==='Unassigned') throw new Error('FORBIDDEN: Your account needs an active role assignment.');
   const user: AccessUser = {...memberIdentity(member,store),userId:identityUser.userId,displayName:identityUser.displayName,email:identityUser.email,role};
-  return {store,revision:migrated?await saveWorkspace(store,row.revision):row.revision,user};
+  const revision = demoMigrated
+    ? saveWorkspaceMigration(runtimeDatabase(), JSON.stringify(await sealVault(store,env.ERP_VAULT_KEY||'')), row.revision, `demo-content-v${DEMO_CONTENT_VERSION}`)
+    : migrated ? await saveWorkspace(store,row.revision) : row.revision;
+  return {store,revision,user};
 }
 export async function saveWorkspace(store:Store,revision:number) {
   const encrypted = await sealVault(store,env.ERP_VAULT_KEY||'');
