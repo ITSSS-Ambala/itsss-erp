@@ -135,9 +135,12 @@ An additional account cannot claim an empty workspace. Initialization creates
 that administrator as Super Admin and seeds one linked example per populated
 module. The 11 standard roles remain functional access configuration. Existing
 workspaces receive a one-time cleanup on the next authenticated load, with a
-pre-cleanup snapshot retained in SQLite with vault records encrypted. Real records
-and their linked sample dependencies are preserved; uploaded files, passwords
-and sessions remain intact.
+pre-cleanup snapshot retained in SQLite with vault records encrypted. Version 2
+also cleans workspaces already migrated by version 1. Real records remain, and
+links to surplus samples are cleared instead of reassigned. Audit history does
+not preserve surplus samples. A cleared required relation needs a real record
+selected when next editing that record. Uploaded files, passwords and sessions
+remain intact.
 
 To allow a team member:
 

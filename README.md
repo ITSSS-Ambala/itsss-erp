@@ -100,8 +100,12 @@ A fresh workspace seeds one linked example per populated module (65 examples),
 with all 11 standard access roles retained as operational configuration. Uploads,
 notifications and backups start empty until actual files or events exist.
 Existing workspaces receive a one-time cleanup on their next authenticated load:
-only records still marked as demo are reduced, and real records and the sample
-dependencies they reference are preserved. A copy of the original workspace,
+only records still marked as demo are reduced to at most one per section. Real
+records remain; their links to removed samples are cleared instead of being
+reassigned to different demo businesses or employees. Audit history does not
+keep surplus samples alive. Version 2 also cleans workspaces previously migrated
+by version 1. Credentialed accounts and operational access definitions remain.
+A copy of the original workspace,
 with vault records encrypted, is saved atomically in SQLite's
 `erp_workspace_migrations` table before the cleanup; full recovery backups include
 it. The cleanup does not repeat after users edit or remove examples. Deployment

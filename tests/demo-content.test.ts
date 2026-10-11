@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { createSeed } from '../lib/seed.ts';
-import { DEMO_CONTENT_VERSION, migrateDemoContent } from '../lib/demo-content.ts';
+import { DEMO_CONTENT_VERSION, migrateDemoContent, reduceDemoContent } from '../lib/demo-content.ts';
 import { migrateLeadProfiles } from '../lib/lead-profiles.ts';
 import { resolveModules, type Store } from '../lib/schema.ts';
 import { validateRecord, runAutomations } from '../lib/engine.ts';
@@ -16,7 +16,7 @@ function legacyWorkspace(): Store {
   for (const role of store.roles) { role.demo = true; delete role.systemDefault; }
   store.users = [{ id: 'owner', name: 'Real administrator', role: 'ROLE-001', email: 'owner@example.com', status: 'Active' }];
   store.employees.unshift({ ...store.employees[0], id: 'EMP-001', name: 'Demo manager', email: 'manager@example.com', role: 'Manager' });
-  store.employees.push({ ...store.employees[1], id: 'EMP-008', name: 'Other demo technician', email: 'other@example.com' });
+  store.employees.push({ ...store.employees[0], id: 'EMP-008', name: 'Other demo technician', email: 'other@example.com' });
   store.customers.push({ ...store.customers[0], id: 'CUS-002', name: 'Other demo company', profileLeadId: 'LEAD-002' });
   store.leads.push({ ...store.leads[0], id: 'LEAD-002', name: 'Other demo company', customer: 'CUS-002', project: 'PRJ-002' });
   store.contacts.push({ ...store.contacts[0], id: 'CON-002', customer: 'CUS-002' });
@@ -85,7 +85,7 @@ test('legacy cleanup removes surplus demos including archived/deleted samples an
   assert.equal(migrateLeadProfiles(store), false, 'cleaned companies never recreate deleted profiles');
 });
 
-test('real records retain their original sample references and transitive dependencies', () => {
+test('the remaining sample prefers direct real links without retaining a chain of other samples', () => {
   const store = legacyWorkspace();
   const realPayment = { id: 'real-payment', name: 'Actual receipt', project: 'PRJ-002', customer: 'CUS-002', date: '2026-10-11', amount: 1000, status: 'Received' };
   store.payments.push(structuredClone(realPayment));
@@ -93,21 +93,59 @@ test('real records retain their original sample references and transitive depend
   assert.deepEqual(store.payments.find(row => row.id === realPayment.id), realPayment);
   assert.equal(store.projects.length, 1, 'the genuinely referenced example is preferred');
   assert.equal(store.projects[0].id, 'PRJ-002');
-  assert.deepEqual(store.projects[0].technicians, ['EMP-008']);
+  assert.deepEqual(store.projects[0].technicians, ['EMP-004']);
   assert.equal(store.customers[0].id, 'CUS-002');
-  assert.ok(store.employees.some(row => row.id === 'EMP-001'));
-  assert.ok(store.employees.some(row => row.id === 'EMP-008'));
+  assert.equal(store.employees.length, 1);
   assertLinked(store);
 });
 
-test('multiple samples referenced by real records are preserved without relabeling them as real', () => {
+test('surplus sample links are cleared without deleting or reassigning the real records', () => {
   const store = legacyWorkspace();
   const notes = ['PRJ-001', 'PRJ-002'].map((project, index) => ({ id: `real-note-${index}`, name: 'Actual note', relatedModule: 'projects', relatedId: project, content: 'Actual project history' }));
   store.notes.push(...structuredClone(notes));
   migrateDemoContent(store);
-  assert.deepEqual(store.notes.filter(row => row.demo !== true), notes);
-  assert.equal(store.projects.length, 2);
+  assert.deepEqual(store.notes.filter(row => row.demo !== true), [notes[0], { ...notes[1], relatedId: '' }]);
+  assert.equal(store.projects.length, 1);
   assert.ok(store.projects.every(row => row.demo === true));
+  assertLinked(store);
+});
+
+test('version 1 upgrades again and audit history never keeps surplus demos alive', () => {
+  const store = legacyWorkspace();
+  store.settings[0].demoContentVersion = 1;
+  const history = ['PRJ-001', 'PRJ-002'].map((recordId, index) => ({ id: `real-audit-${index}`, name: 'Previous edit', module: 'projects', recordId, action: 'update' }));
+  store.auditLogs.push(...structuredClone(history));
+  assert.equal(migrateDemoContent(store), true);
+  assert.equal(store.settings[0].demoContentVersion, 2);
+  for (const [moduleId, rows] of Object.entries(store)) assert.ok(rows.filter(row => row.demo === true).length <= 1, moduleId);
+  assert.deepEqual(store.auditLogs.filter(row => row.demo !== true), history);
+  const before = JSON.stringify(store);
+  assert.equal(migrateLeadProfiles(store), false);
+  assert.equal(migrateDemoContent(store), false);
+  assert.equal(JSON.stringify(store), before);
+});
+
+test('old notifications retain event history while references to surplus demo recipients are cleared', () => {
+  const store = legacyWorkspace();
+  store.notifications.push({ id: 'real-notification', name: 'Previous event', recipient: 'EMP-008', sourceModule: 'projects', sourceId: 'PRJ-002', recipientName: 'Previous sample recipient' });
+  migrateDemoContent(store);
+  assert.equal(store.employees.length, 1);
+  assert.equal(store.employees[0].id, 'EMP-004');
+  assert.deepEqual(store.notifications[0], { id: 'real-notification', name: 'Previous event', recipient: '', sourceModule: 'projects', sourceId: 'PRJ-002', recipientName: 'Previous sample recipient' });
+  assertLinked(store);
+});
+
+test('scalar and multi-value custom links to removed samples are cleared, keeping real links', () => {
+  const store = legacyWorkspace();
+  store.customFields.push({ id: 'real-custom-link', moduleId: 'notes', key: 'employees', name: 'Employees', type: 'multiselect', relation: 'employees', status: 'Active' });
+  const employee = { id: 'real-employee', name: 'Actual employee' };
+  store.employees.push(employee);
+  const note = { id: 'real-note', name: 'Actual note', employees: ['EMP-004', 'EMP-008', employee.id] };
+  store.notes.push(note);
+  // Prefer EMP-004 when both samples have equal direct usage.
+  const result = reduceDemoContent(store);
+  assert.equal(result.clearedLinks, 1);
+  assert.deepEqual(note.employees, ['EMP-004', employee.id]);
   assertLinked(store);
 });
 
@@ -120,6 +158,8 @@ test('credentialed accounts retain access and employee/client mappings even when
   assert.ok(store.users.some(row => row.id === 'managed-tech' && row.employee === 'EMP-008'));
   assert.ok(store.roles.some(row => row.id === 'ROLE-011' && row.status === 'Active'));
   assert.ok(store.roles.some(row => row.id === 'ROLE-005' && row.status === 'Active'));
+  assert.ok(store.users.filter(row => row.id !== 'USER-002').every(row => row.demo !== true));
+  for (const [moduleId, rows] of Object.entries(store)) assert.ok(rows.filter(row => row.demo === true).length <= 1, moduleId);
   assertLinked(store);
 });
 

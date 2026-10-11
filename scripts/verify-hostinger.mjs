@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { resolve, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { hashPassword } from '../lib/hostinger/password.ts';
+import { DEMO_CONTENT_VERSION } from '../lib/demo-content.ts';
 
 await mkdir(resolve('outputs'), { recursive: true });
 const state = await mkdtemp(resolve('outputs/hostinger-smoke-'));
@@ -94,9 +95,11 @@ try {
   try {
     const row = legacyDatabase.prepare('SELECT data, revision FROM erp_workspace WHERE id = ?').get('main');
     const legacyStore = JSON.parse(String(row.data));
-    delete legacyStore.settings[0].demoContentVersion;
+    legacyStore.settings[0].demoContentVersion = 1;
     for (const moduleId of ['employees', 'products', 'projects']) legacyStore[moduleId].push({ ...legacyStore[moduleId][0], id: `DEMO-EXTRA-${moduleId}`, demo: true });
     legacyStore.notes.push({ id: 'real-upgrade-note', name: 'Actual project history', relatedModule: 'projects', relatedId: legacyStore.projects[0].id, content: 'Preserve this real record during demo cleanup.' });
+    legacyStore.auditLogs.push({ id: 'real-upgrade-audit', name: 'Sample previously edited', module: 'projects', recordId: 'DEMO-EXTRA-projects', action: 'update' });
+    legacyStore.notes.push({ id: 'real-detached-note', name: 'Actual note with sample link', relatedModule: 'projects', relatedId: 'DEMO-EXTRA-projects', content: 'Keep the note and clear only its surplus demo link.' });
     legacyData = JSON.stringify(legacyStore); legacyRevision = Number(row.revision) + 1;
     legacyDatabase.prepare('UPDATE erp_workspace SET data = ?, revision = ? WHERE id = ?').run(legacyData, legacyRevision, 'main');
   } finally { legacyDatabase.close(); }
@@ -105,9 +108,10 @@ try {
   assert.equal(workspace.revision, legacyRevision + 1);
   for (const [moduleId, rows] of Object.entries(workspace.store)) assert.ok(rows.filter(row => row.demo === true).length <= 1, `${moduleId} cleanup failed`);
   assert.ok(workspace.store.notes.some(row => row.id === 'real-upgrade-note' && row.relatedId === 'PRJ-001'));
+  assert.ok(workspace.store.notes.some(row => row.id === 'real-detached-note' && row.relatedId === ''));
   const snapshotDatabase = new DatabaseSync(resolve(state, 'workspace.sqlite'), { readOnly: true });
   try {
-    assert.equal(snapshotDatabase.prepare('SELECT data FROM erp_workspace_migrations WHERE migration = ?').get('demo-content-v1')?.data, legacyData);
+    assert.equal(snapshotDatabase.prepare('SELECT data FROM erp_workspace_migrations WHERE migration = ?').get(`demo-content-v${DEMO_CONTENT_VERSION}`)?.data, legacyData);
     assert.equal(snapshotDatabase.prepare('SELECT COUNT(*) AS count FROM erp_workspace_migrations').get()?.count, 1);
   } finally { snapshotDatabase.close(); }
   assert.equal((await (await request('/api/workspace', { headers })).json()).revision, workspace.revision, 'cleanup runs once');
